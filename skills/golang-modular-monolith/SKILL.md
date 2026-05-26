@@ -548,6 +548,7 @@ modules/order/
   domain/
     entity.go           # orderEntity, orderItemEntity
     dto.go              # orderDTO, orderItemDTO
+    constants.go        # Outbox type keys, status enums, domain-level constants
     errors.go           # Domain errors
     events.go           # OrderPlaced, OrderCancelled
   module.go             # Register(c) — wires ports → adapters
@@ -559,9 +560,10 @@ modules/order/
 |------|--------|---------|-----------|
 | `domain/entity.go` | `domain` | DB-mapped structs with gorm/sql tags | unexported |
 | `domain/dto.go` | `domain` | Internal transfer structs, no tags | unexported |
+| `domain/constants.go` | `domain` | Domain-level constants: outbox types, status enums, state values | exported |
 | `domain/errors.go` | `domain` | Error types + sentinels | exported |
 | `domain/events.go` | `domain` | Event structs | exported |
-| `ports/service.go` | `ports` | Service interface | exported |
+| `ports/service.go` | `ports` | Service interface + container Key constant | exported |
 | `ports/repository.go` | `ports` | Repository interface | exported |
 | `adapters/http/request.go` | `http` | API input types, json+validate tags | exported |
 | `adapters/http/response.go` | `http` | API output types, json tags | exported |
@@ -3677,6 +3679,7 @@ modules/order/
   domain/
     entity.go           # orderEntity, orderItemEntity (gorm/sqlx tags, unexported)
     dto.go              # orderDTO, orderItemDTO (no tags, unexported)
+    constants.go        # OutboxTypeOrderPlaced, status enums (exported)
     errors.go           # Domain error types (exported)
     events.go           # OrderPlaced, OrderCancelled (exported)
   module.go             # Register(c, r) — wires ports → adapters
@@ -3865,6 +3868,7 @@ The composition root is flat, declarative, and trivially auditable. Every module
 | `ports/repository.go` | `ports` | Interface | No | Repository interface |
 | `domain/entity.go` | `domain` | No | gorm/sqlx | DB table structs, `toDTO()` methods |
 | `domain/dto.go` | `domain` | No | None | Internal transfer objects |
+| `domain/constants.go` | `domain` | Yes | No | Outbox type keys, status enums, state values |
 | `domain/errors.go` | `domain` | Yes | No | Error types implementing DomainError |
 | `domain/events.go` | `domain` | Yes | json | Domain event structs |
 | `adapters/http/handler.go` | `http` | Unexported struct | No | Handler — calls ports.Service |
@@ -4069,7 +4073,7 @@ func (m *Module) RegisterOutboxHandlers(worker *outbox.Worker) {
 }
 ```
 
-Outbox type keys use constants exported from the handler's `application/` package — zero magic strings in registration. See [Outbox Type Keys](#outbox-type-keys).
+Outbox type keys use constants exported from the module's `domain/` package — zero magic strings in registration. See [Outbox Type Keys](#outbox-type-keys).
 
 ## Rules
 
@@ -4345,7 +4349,7 @@ func (s *serviceImpl) PlaceOrder(ctx context.Context, input PlaceOrderInput) err
         }
 
         // Outbox message — same tx. Atomically committed.
-        msg, err := outbox.NewMessage(application.OutboxTypeOrderPlaced, OrderPlacedPayload{
+        msg, err := outbox.NewMessage(domain.OutboxTypeOrderPlaced, OrderPlacedPayload{
             OrderID: orderEntity.ID,
             UserID:  input.UserID,
             Total:   orderEntity.Total,
@@ -4380,7 +4384,7 @@ func NewOrderHandler(notifier notification.Client) outboxAdapter.Handler {
     return &OrderHandler{notifier: notifier}
 }
 
-func (h *OrderHandler) Type() string { return application.OutboxTypeOrderPlaced }
+func (h *OrderHandler) Type() string { return domain.OutboxTypeOrderPlaced }
 
 func (h *OrderHandler) Execute(ctx context.Context, msg outboxAdapter.MessageEntity) error {
     var payload OrderPlacedPayload
@@ -4458,7 +4462,7 @@ auth.welcome_email    # module auth, welcome email on registration
 Modules export their type constants:
 
 ```go
-// modules/order/application/constants.go
+// modules/order/domain/constants.go
 const (
     OutboxTypeOrderPlaced = "order.placed"
 )
@@ -4476,7 +4480,7 @@ No magic strings. The handler's `Type()` returns the constant.
 | `Handler` interface with `Type()` + `Execute()` | Worker knows nothing about business. Handlers are plugins. |
 | Handler is pure adapter — unmarshal → call → return | No retry, no status, no DB. Worker handles all that. |
 | `RegisterOutboxHandlers(worker)` on Module | Module owns its handlers. Builder only calls registration. |
-| Type constants exported from `application/` package | No magic strings. Compile-time safe. |
+| Type constants exported from `domain/` package | No magic strings. Compile-time safe. |
 | `FOR UPDATE SKIP LOCKED` in FetchPending | Concurrent workers don't fight over same messages. |
 | Retry: back to `StatusPending` with incremented counter | Worker re-picks it next cycle. No custom retry scheduling. |
 | MaxRetries defaults to 3 if zero | Sensible default. Module can override via `NewMessage` payload. |
