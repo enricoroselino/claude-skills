@@ -740,7 +740,7 @@ When the app connects to two completely different databases (e.g., main app DB +
 **Config — two full URLs:**
 
 ```go
-// modules/shared/platform/config/config.go
+// modules/shared/config/config.go
 type Config struct {
     DatabaseURL   string     // database A
     DatabaseBURL   string     // database B
@@ -1018,7 +1018,9 @@ CREATE TABLE orders (
 
 ## Principle
 
-Every table must have `created_at` and `updated_at`. No exceptions. An entity without timestamps is an unobservable black box. Timestamps enable debugging ("when did this happen?"), auditing ("what changed before the incident?"), and monitoring ("how fast are orders growing?").
+Every entity table must have `created_at` and `updated_at`. No exceptions. An entity without timestamps is an unobservable black box. Timestamps enable debugging ("when did this happen?"), auditing ("what changed before the incident?"), and monitoring ("how fast are orders growing?").
+
+Infrastructure tables (`outbox`, `system_alerts`) are append-only — `created_at` only, no `updated_at`.
 
 ## Entities Always Carry Timestamps
 
@@ -1035,6 +1037,83 @@ type orderEntity struct {
 ```
 
 Every entity struct has both. No opt-out. The DB tags match column names `created_at` and `updated_at`.
+
+## Clock Abstraction
+
+`time.Now()` in domain code makes tests non-deterministic and prevents timezone swaps. Inject a `Clock` interface everywhere.
+
+```go
+// modules/shared/clock.go
+package shared
+
+import "time"
+
+// Clock abstracts time.Now() for testability and timezone control.
+type Clock interface {
+    Now() time.Time
+}
+```
+
+```go
+// modules/shared/system_clock.go
+package shared
+
+import "time"
+
+type systemClock struct{}
+
+func NewSystemClock() Clock { return &systemClock{} }
+
+func (c *systemClock) Now() time.Time { return time.Now() }
+```
+
+```go
+// modules/shared/local_clock.go — swap for local-time environments
+package shared
+
+import "time"
+
+type localClock struct{}
+
+func NewLocalClock() Clock { return &localClock{} }
+
+func (c *localClock) Now() time.Time { return time.Now().UTC() } // or drop .UTC() for local
+```
+
+```go
+// modules/shared/fake_clock.go — deterministic time in tests
+package shared
+
+import "time"
+
+type FakeClock struct {
+    T time.Time
+}
+
+func NewFakeClock(t time.Time) *FakeClock { return &FakeClock{T: t} }
+
+func (c *FakeClock) Now() time.Time { return c.T }
+
+func (c *FakeClock) Advance(d time.Duration) { c.T = c.T.Add(d) }
+```
+
+Registration in `cmd/`:
+
+```go
+c.Set("clock", shared.NewSystemClock())   // production — UTC via time.Now()
+// c.Set("clock", shared.NewLocalClock()) // dev — local machine time
+```
+
+In tests:
+
+```go
+clock := shared.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+entity := newOrderEntity(id, input, clock)
+entity.SetCreate(clock)
+// entity.CreatedAt == clock.Now() — deterministic
+```
+
+### Never call `time.Now()` directly in domain or service code. Always go through `Clock`.
 
 ## Auto-Populate with `BaseEntity` (Shared)
 
@@ -1053,15 +1132,16 @@ type BaseEntity struct {
     UpdatedAt time.Time `db:"updated_at"`
 }
 
-// SetCreate marks both timestamps to time.Now(). Call once before insert.
-func (b *BaseEntity) SetCreate() {
-    b.CreatedAt = time.Now()
-    b.UpdatedAt = b.CreatedAt
+// SetCreate marks both timestamps via clock. Call once before insert.
+func (b *BaseEntity) SetCreate(c Clock) {
+    now := c.Now()
+    b.CreatedAt = now
+    b.UpdatedAt = now
 }
 
-// SetUpdate bumps UpdatedAt to time.Now(). Call before every update.
-func (b *BaseEntity) SetUpdate() {
-    b.UpdatedAt = time.Now()
+// SetUpdate bumps UpdatedAt via clock. Call before every update.
+func (b *BaseEntity) SetUpdate(c Clock) {
+    b.UpdatedAt = c.Now()
 }
 ```
 
@@ -1092,7 +1172,7 @@ func (s *serviceImpl) PlaceOrder(ctx context.Context, input orderDTO) (orderDTO,
         Status: "pending",
         Total:  input.total.AmountInCents,
     }
-    entity.SetCreate() // sets CreatedAt + UpdatedAt
+    entity.SetCreate(s.clock) // sets CreatedAt + UpdatedAt
 
     err := s.uow.Execute(ctx, func(tx *sqlx.Tx) error {
         return s.repo.insertOrder(ctx, tx, entity)
@@ -1108,13 +1188,13 @@ func (s *serviceImpl) CancelOrder(ctx context.Context, orderID string) error {
             return err
         }
         entity.Status = "cancelled"
-        entity.SetUpdate() // bumps UpdatedAt only
+        entity.SetUpdate(s.clock) // bumps UpdatedAt only
         return s.repo.updateStatus(ctx, tx, entity)
     })
 }
 ```
 
-`.SetCreate()` on creation. `.SetUpdate()` on mutation. Nothing else touches these fields.
+`SetCreate(clock)` on creation. `SetUpdate(clock)` on mutation. Nothing else touches these fields. Clock comes from `s.clock` — injected via constructor.
 
 ## Repository — Timestamps Are Part of the Entity
 
@@ -2201,32 +2281,54 @@ Only truly shared concerns that every module needs. The bar is **very high**.
 
 ```
 modules/shared/
-  httputil/
-    response.go        # ApiResponse, PaginationMetadata, all NewXxx constructors
-    handler.go         # BaseHandler with typed response helpers + GetPaginationParams()
-  valueobject/         # Shared value objects — immutable, self-validating
-    money.go           # Money{Amount, Currency}
-    email.go           # Email{Address}
-    phone.go           # PhoneNumber{CountryCode, Number}
-    rating.go          # Rating{Value, Max}
-  platform/
-    outbox/
-      entity.go        # MessageEntity, Handler interface
-      repository.go    # Repository interface + impl
-      worker.go        # Worker — poll + dispatch + retry
-    logs/
-      entity.go        # AlertEntity
-      worker.go        # LogsWorker — channel consume + persist
-      repository.go    # Repository impl
-    config/
-      config.go        # Config struct, Load(), Validate()
-    db/
-      transactor.go    # UnitOfWork[T] interface + sqlx impl
-  container.go         # DI Container, Set/Get/MustGet
-  errors.go            # DomainError marker interface
-  context.go           # GetUserID(ctx), GetRequestID(ctx)
-  entity.go           # BaseEntity — CreatedAt + UpdatedAt + SetCreate()/SetUpdate()
-  eventbus.go          # EventBus — typed subscribe/publish
+  entity.go             # BaseEntity — CreatedAt/UpdatedAt + SetCreate/SetUpdate
+  clock.go              # Clock interface + SystemClock + LocalClock + FakeClock
+  container.go          # Container, MustGet[T], Set, Keys
+  errors.go             # DomainError interface
+  eventbus.go           # EventBus — typed subscribe/publish
+  context.go            # GetUserID(ctx), GetRequestID(ctx)
+
+  config/
+    config.go           # Config struct, Load(), Validate()
+
+  log/                  #   Logger interface + slog adapters
+    log.go              #   Logger interface
+    slog_adapter.go     #   SlogAdapter — slog → Logger
+    noop_logger.go      #   NoopLogger — for tests
+    db_handler.go       #   DBHandler — captures WARN+ERROR to channel
+    tee_handler.go      #   TeeHandler — dual output (console + DB)
+    worker.go           #   LogsWorker — persist channel to system_alerts
+    alert.go            #   AlertEntity — DB-mapped alert record
+
+  httputil/             #   HTTP response helpers + pagination
+    response.go         #   ApiResponse, PaginationMetadata, all constructors
+    handler.go          #   BaseHandler — decode/validate/respond pattern
+    request.go          #   GetReqID(), CtxKey constants
+
+  outbox/               #   Transactional outbox — shared across modules
+    entity.go           #   OutboxMessage, OutboxStatus
+    repository.go       #   OutboxRepository interface + sqlx impl
+    handler.go          #   OutboxHandler interface
+    worker.go           #   OutboxWorker — poll + dispatch + retry
+    reaper.go           #   Expired message cleanup
+    options.go          #   OutboxOptions
+
+  sql/                  #   Database + transaction abstraction
+    transactor.go       #   UnitOfWork interface + sqlx impl
+    sql.go              #   NewDB(), NewTx()
+
+  mail/
+    mail.go             #   MailSender interface
+    mailgun_adapter.go  #   MailgunAdapter
+
+  worker/
+    worker.go           #   Worker interface (Start(ctx))
+
+  valueobject/          #   Immutable, self-validating types — no identity
+    money.go            #   Money{Amount, Currency}
+    email.go            #   Email{Address}
+    phone.go            #   PhoneNumber{CountryCode, Number}
+    rating.go           #   Rating{Value, Max}
 ```
 
 ### Value Objects — `shared/valueobject/`
@@ -2512,7 +2614,7 @@ Key behaviors:
 A platform-level background worker consumes `LogRecord` from the channel and INSERTs into `system_alerts`:
 
 ```go
-// modules/shared/platform/logs/worker.go
+// modules/shared/log/worker.go
 type Worker interface {
     Start(ctx context.Context)
 }
@@ -4121,7 +4223,7 @@ The event bus (`shared/EventBus`) is in-process and fire-and-forget. If the proc
 
 ## Where It Lives
 
-Outbox is **platform infrastructure** — not a business module. Lives in `modules/shared/platform/outbox/`.
+Outbox is **platform infrastructure** — not a business module. Lives in `modules/shared/outbox/`.
 
 ```
 modules/shared/
@@ -4137,7 +4239,7 @@ Business modules never create their own outbox tables or poll loops. They use th
 ## Message Entity
 
 ```go
-// modules/shared/platform/outbox/entity.go
+// modules/shared/outbox/entity.go
 package outbox
 
 const (
@@ -4167,8 +4269,8 @@ type Handler interface {
     Execute(ctx context.Context, msg MessageEntity) error
 }
 
-// NewMessage creates a pending outbox message with UUIDv7 and current timestamp.
-func NewMessage(msgType string, payload any) (MessageEntity, error) {
+// NewMessage creates a pending outbox message with UUIDv7 and clock timestamp.
+func NewMessage(msgType string, payload any, clock Clock) (MessageEntity, error) {
     data, _ := json.Marshal(payload)
     id, _ := uuid.NewV7()
     return MessageEntity{
@@ -4176,7 +4278,8 @@ func NewMessage(msgType string, payload any) (MessageEntity, error) {
         Type:      msgType,
         Payload:   data,
         Status:    StatusPending,
-        CreatedAt: time.Now(),
+        MaxRetries: 3,
+        CreatedAt: clock.Now(),
     }, nil
 }
 ```
@@ -4282,7 +4385,7 @@ Default 7 days. Configurable via `WithRetentionDays(30)`.
 ## Repository
 
 ```go
-// modules/shared/platform/outbox/repository.go
+// modules/shared/outbox/repository.go
 package outbox
 
 type Repository interface {
@@ -4307,7 +4410,7 @@ type Repository interface {
 ## Worker
 
 ```go
-// modules/shared/platform/outbox/worker.go
+// modules/shared/outbox/worker.go
 type Worker struct {
     repo           Repository
     log            logger.Logger
@@ -4486,6 +4589,146 @@ No magic strings. The handler's `Type()` returns the constant.
 | MaxRetries defaults to 3 if zero | Sensible default. Module can override via `NewMessage` payload. |
 | Reaper cleans sent + failed older than N days | Prevents unbounded table growth. Separate slow timer. |
 | `Start(ctx)` blocks until ctx cancelled | Graceful shutdown. Worker drains current batch on cancel. |
+
+---
+
+# Full Project Structure
+
+```
+cmd/
+  server/
+    main.go                          # Host setup, middleware order, module registration
+
+internal/
+  middleware/
+    recoverer.go                     # Recoverer middleware
+    request_logging.go               # Slogchi request logger + request ID
+    rate_limiter.go                  # Rate limiter per IP / per route
+    real_ip.go                       # Cloudflare / reverse proxy trusted headers
+
+modules/
+  shared/                            # Shared kernel — every module depends on this
+    entity.go                        #   BaseEntity — CreatedAt/UpdatedAt
+    clock.go                         #   Clock interface + SystemClock + LocalClock + FakeClock
+    container.go                     #   Container, MustGet[T], Set, Keys
+    errors.go                        #   DomainError interface
+    eventbus.go                      #   EventBus — typed subscribe/publish
+    context.go                       #   GetUserID(ctx), GetRequestID(ctx)
+    config/
+      config.go                      #   Config struct + Load() from env
+    log/
+      log.go                         #   Logger interface
+      slog_adapter.go                #   SlogAdapter — slog → Logger
+      noop_logger.go                 #   NoopLogger — for tests
+      db_handler.go                  #   DBHandler — captures WARN+ERROR to channel
+      tee_handler.go                 #   TeeHandler — dual output (console + DB)
+      worker.go                      #   LogsWorker — persist channel to system_alerts
+      alert.go                       #   AlertEntity — DB-mapped alert record
+    httputil/
+      response.go                    #   ApiResponse, PaginationMetadata, constructors
+      handler.go                     #   BaseHandler — decode/validate/respond
+      request.go                     #   GetReqID(), CtxKey constants
+    outbox/
+      entity.go                      #   OutboxMessage, OutboxStatus
+      repository.go                  #   OutboxRepository interface + sqlx impl
+      handler.go                     #   OutboxHandler interface
+      worker.go                      #   OutboxWorker — poll + dispatch + retry
+      reaper.go                      #   Expired message cleanup
+      options.go                     #   OutboxOptions
+    sql/
+      transactor.go                  #   UnitOfWork interface + sqlx impl
+      sql.go                         #   NewDB(), NewTx()
+    mail/
+      mail.go                        #   MailSender interface
+      mailgun_adapter.go             #   MailgunAdapter
+    worker/
+      worker.go                      #   Worker interface (Start(ctx))
+    valueobject/
+      money.go                       #   Money{Amount, Currency}
+      email.go                       #   Email{Address}
+      phone.go                       #   PhoneNumber{CountryCode, Number}
+      rating.go                      #   Rating{Value, Max}
+
+  order/                             # Business capability
+    ports/
+      service.go                     #   Service interface + Key constant
+      repository.go                  #   Repository interface
+    adapters/
+      http/
+        handler.go                   #   OrderHandler
+        request.go                   #   CreateOrderRequest, CancelOrderRequest
+        response.go                  #   OrderResponse, OrderItemResponse
+        routes.go                    #   RegisterRoutes(r, h)
+      postgres/
+        repository.go                #   SQL implementation
+      worker/
+        reaper.go                    #   OrderReaper — periodic cleanup
+    domain/
+      entity.go                      #   orderEntity, orderItemEntity
+      dto.go                         #   orderDTO, orderItemDTO
+      constants.go                   #   Status enums, outbox type keys
+      errors.go                      #   Domain errors
+      events.go                      #   OrderPlaced, OrderCancelled
+    module.go                        #   Register(c) — wires ports → adapters
+
+  payment/                           # Business capability
+    ports/
+      service.go
+    adapters/
+      http/
+        handler.go
+        request.go
+        response.go
+        routes.go
+      postgres/
+        repository.go
+    domain/
+      entity.go
+      constants.go
+      errors.go
+      events.go
+    module.go
+
+  notification/                      # Business capability
+    ports/
+      service.go
+    adapters/
+      http/
+        handler.go
+        request.go
+        response.go
+        routes.go
+      postgres/
+        repository.go
+      worker/
+        mail_handler.go              # OutboxHandler — notification.mail
+        push_handler.go              # OutboxHandler — notification.push
+    domain/
+      entity.go
+      constants.go                   # Outbox type keys: notification.mail, notification.push
+      errors.go
+    module.go
+
+  user/                              # Business capability
+    ports/
+      service.go                     #   Service interface + Key constant
+      repository.go                  #   Repository interface
+    adapters/
+      http/
+        handler.go
+        request.go
+        response.go
+        routes.go
+      postgres/
+        repository.go
+    domain/
+      entity.go
+      constants.go
+      errors.go
+    module.go
+```
+
+Every module has the same shape. Adding a module = copying the folder structure + writing domain logic.
 
 ---
 
