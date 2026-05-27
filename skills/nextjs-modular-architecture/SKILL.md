@@ -1,7 +1,7 @@
 ---
 name: nextjs-modular-architecture
 description: Enforce modular architecture in Next.js 16 — client-first, feature modules, per-module tsyringe DI, thin app/ routing shell, Zod validation schemas, API clients as infrastructure.
-version: 2.2.0
+version: 2.2.1
 author: User
 ---
 
@@ -34,7 +34,7 @@ Browser
 This means:
 - No Server Components for data fetching. Pages are client-rendered shells.
 - No `"use cache"`, no `cacheTag`, no `revalidateTag` — caching is the backend's job.
-- No `cookies()`, `headers()`, `proxy.ts` rewrites to hide backend URLs — the API base URL is config.
+- No `cookies()`, `headers()` rewrites to hide backend URLs — the API base URL is config. `proxy.ts` is reserved for i18n locale routing only.
 - tsyringe DI is the universal pattern — every component resolves its dependencies.
 - `infrastructure/` = API clients. No ORM, no DB driver, no `revalidateTag`.
 - No "domain entities" or "value objects" — frontend only needs Zod request schemas and API response types.
@@ -261,6 +261,7 @@ export const env = createEnv({
    */
   client: {
     NEXT_PUBLIC_API_BASE_URL: z.string().url(),
+    NEXT_PUBLIC_APP_URL: z.string().url(),
     NEXT_PUBLIC_APP_NAME: z.string().min(1),
   },
 
@@ -269,6 +270,7 @@ export const env = createEnv({
     API_BASE_URL: process.env.API_BASE_URL,
     API_KEY: process.env.API_KEY,
     NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
   },
 
@@ -306,6 +308,7 @@ API_KEY=dev-api-key
 
 # Client (NEXT_PUBLIC_ prefix required)
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1
+NEXT_PUBLIC_APP_URL=http://localhost:3000
 NEXT_PUBLIC_APP_NAME=MyApp
 ```
 
@@ -377,9 +380,7 @@ export default createNextIntlPlugin()(nextConfig);
 CSP is **not** set globally via `headers()` for a client-first app. Why:
 - Inline scripts/styles from Next.js's dev bundler conflict with strict `script-src` / `style-src`.
 - CSP is easier to iterate on via a `Content-Security-Policy-Report-Only` header in development.
-- Use `proxy.ts` for CSP so you can compute nonces dynamically if needed.
-
-If the project needs CSP: add `proxy.ts` with `nonce` generation, set `Content-Security-Policy` per-request. Not covered here — start with the six headers above.
+- `proxy.ts` is already occupied by i18n locale routing (`next-intl`). If CSP with nonces is needed, add a second proxy or set `Content-Security-Policy` via `headers()` in `next.config.ts` with `Report-Only` mode first.
 
 ### Standalone Output (Docker)
 
@@ -1387,9 +1388,10 @@ export const SHARED_TOKENS = {
 // src/modules/shared/infrastructure/pino-logger.ts
 import pino, { type Logger as PinoInstance } from 'pino';
 import type { ILogger } from '../types/logger';
+import { env } from '@/env';
 
 const isBrowser = typeof window !== 'undefined';
-const isProd = process.env.NODE_ENV === 'production';
+const isProd = env.NODE_ENV === 'production';
 
 function createRootPino(): PinoInstance {
   if (isBrowser) {
@@ -2295,7 +2297,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  metadataBase: new URL(env.NEXT_PUBLIC_API_BASE_URL),
+  metadataBase: new URL(env.NEXT_PUBLIC_APP_URL),
   title: {
     template: '%s | Acme',
     default: 'Acme — Project Management',
@@ -2389,7 +2391,7 @@ import { env } from '@/env';
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: { userAgent: '*', allow: '/', disallow: ['/api/', '/_next/'] },
-    sitemap: `${env.NEXT_PUBLIC_API_BASE_URL}/sitemap.xml`,
+    sitemap: `${env.NEXT_PUBLIC_APP_URL}/sitemap.xml`,
   };
 }
 ```
@@ -2402,7 +2404,7 @@ import type { MetadataRoute } from 'next';
 import { env } from '@/env';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = env.NEXT_PUBLIC_API_BASE_URL;
+  const baseUrl = env.NEXT_PUBLIC_APP_URL;
   return [
     { url: baseUrl, lastModified: new Date(), changeFrequency: 'yearly', priority: 1 },
     { url: `${baseUrl}/about`, lastModified: new Date(), changeFrequency: 'monthly', priority: 0.8 },
