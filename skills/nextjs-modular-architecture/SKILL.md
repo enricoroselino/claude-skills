@@ -1,7 +1,7 @@
 ---
 name: nextjs-modular-architecture
 description: Enforce modular architecture in Next.js 16 — client-first, feature modules, per-module tsyringe DI, thin app/ routing shell, Zod validation schemas, API clients as infrastructure.
-version: 2.1.0
+version: 2.2.0
 author: User
 ---
 
@@ -42,6 +42,166 @@ This means:
 
 ---
 
+# Project Structure
+
+```
+project-root/
+├── proxy.ts                         # next-intl locale routing (Next.js 16)
+├── next.config.ts                   # Security headers, reactCompiler, next-intl plugin
+├── postcss.config.mjs               # Tailwind v4 PostCSS plugin
+├── tsconfig.json                    # experimentalDecorators, emitDecoratorMetadata
+├── .env.example                     # Template — commit this. Copy to .env.local
+├── messages/                        # i18n translation JSON files
+│   ├── en/                          # English — source of truth
+│   │   ├── common.json              # Buttons, errors, nav, dates
+│   │   ├── auth.json                # Auth module strings
+│   │   ├── dashboard.json
+│   │   └── orders.json
+│   └── fr/                          # French — translators fill
+│       ├── common.json
+│       ├── auth.json
+│       ├── dashboard.json
+│       └── orders.json
+│
+└── src/
+    ├── env.ts                       # T3 Env — createEnv({ server, client, runtimeEnv })
+    │
+    ├── i18n/
+    │   ├── routing.ts               # defineRouting({ locales, defaultLocale, localePrefix })
+    │   └── request.ts               # getRequestConfig — loads messages per locale
+    │
+    ├── app/                         # Thin routing shell — no business logic
+    │   ├── robots.ts                # Crawl rules + sitemap reference
+    │   ├── sitemap.ts               # All public URLs for search engines
+    │   ├── manifest.json            # PWA manifest
+    │   ├── layout.tsx               # Root: <html lang>, metadata, metadataBase, viewport
+    │   │
+    │   ├── _lib/                    # Shared app infrastructure (private folder)
+    │   │   ├── di/
+    │   │   │   ├── container.ts     # Root tsyringe container — import 'reflect-metadata'
+    │   │   │   ├── use-resolve.ts   # useResolve<T>(token) hook — useMemo wrapper
+    │   │   │   └── provider.tsx     # DIProvider — calls initializeAllModules() on mount
+    │   │   └── query/
+    │   │       └── provider.tsx     # QueryClientProvider — TanStack Query defaults
+    │   │
+    │   └── [locale]/                # Locale route group (from next-intl routing)
+    │       ├── (auth)/
+    │       │   ├── login/page.tsx   # export metadata + export default LoginPage
+    │       │   ├── register/page.tsx
+    │       │   └── layout.tsx       # Auth layout — centered card, no nav
+    │       ├── (dashboard)/
+    │       │   ├── page.tsx         # export default DashboardPage
+    │       │   ├── projects/[id]/page.tsx  # export generateMetadata + page
+    │       │   ├── projects/[id]/json-ld.tsx
+    │       │   ├── settings/page.tsx
+    │       │   └── layout.tsx       # Dashboard layout — sidebar + header, AuthGuard
+    │       ├── loading.tsx
+    │       ├── error.tsx
+    │       └── not-found.tsx
+    │
+    └── modules/                     # Feature modules — extractable business capabilities
+        ├── registry.ts              # initializeAllModules() — dependency-ordered init calls
+        │
+        ├── shared/                  # Cross-cutting kernel
+        │   ├── di/
+        │   │   ├── tokens.ts        # SHARED_TOKENS.ApiClient, Logger
+        │   │   └── container.ts     # Logger reg, Axios + interceptors, initializeSharedModule()
+        │   ├── types/
+        │   │   ├── logger.ts        # ILogger interface
+        │   │   ├── api-error.ts     # ApiError { code, message, field? }
+        │   │   └── pagination.ts    # PaginationParams, PaginationMetadata, PaginatedResponse<T>
+        │   ├── infrastructure/
+        │   │   └── pino-logger.ts   # PinoLogger implements ILogger
+        │   ├── stores/              # Shared Zustand stores
+        │   │   ├── notification.store.ts
+        │   │   └── theme.store.ts
+        │   ├── ui/
+        │   │   ├── form-field.tsx   # FormField — TanStack Form + shadcn styled input
+        │   │   └── field-error.tsx  # FieldError — renders ALL errors
+        │   ├── utils/
+        │   │   ├── cn.ts           # clsx wrapper
+        │   │   └── format-date.ts
+        │   └── index.ts            # Barrel
+        │
+        ├── auth/                    # Auth module
+        │   ├── schemas/
+        │   │   ├── login.schema.ts
+        │   │   ├── register.schema.ts
+        │   │   └── change-password.schema.ts
+        │   ├── types/
+        │   │   ├── responses.ts     # LoginResponse, RegisterResponse, UserDto, TokenPair
+        │   │   └── errors.ts
+        │   ├── stores/
+        │   │   └── auth.store.ts    # createAuthStore() — factory receives AuthService
+        │   ├── application/
+        │   │   └── auth.service.ts  # AuthService interface + AuthServiceImpl
+        │   ├── repositories/
+        │   │   └── auth.repository.ts
+        │   ├── ui/
+        │   │   ├── login-page.tsx
+        │   │   ├── login-form.tsx   # TanStack Form + FormField + useTranslations
+        │   │   ├── register-form.tsx
+        │   │   ├── user-avatar.tsx
+        │   │   ├── auth-guard.tsx
+        │   │   └── logout-button.tsx
+        │   ├── di/
+        │   │   ├── tokens.ts        # AUTH_TOKENS: AuthService, AuthRepository, AuthStore
+        │   │   └── container.ts     # createChildContainer + register
+        │   └── index.ts             # Public barrel
+        │
+        ├── dashboard/               # Dashboard module
+        │   ├── types/
+        │   │   └── responses.ts
+        │   ├── stores/
+        │   │   └── dashboard.store.ts
+        │   ├── application/
+        │   │   └── dashboard.service.ts
+        │   ├── repositories/
+        │   │   └── dashboard.repository.ts
+        │   ├── ui/
+        │   │   └── dashboard-page.tsx
+        │   ├── di/
+        │   │   ├── tokens.ts
+        │   │   └── container.ts
+        │   └── index.ts
+        │
+        ├── orders/                  # Orders module — TanStack Query example
+        │   ├── schemas/
+        │   │   └── create-order.schema.ts
+        │   ├── types/
+        │   │   ├── responses.ts     # OrderDto
+        │   │   ├── filters.ts       # OrderFilters
+        │   │   └── query-keys.ts    # orderKeys — const key factory
+        │   ├── stores/
+        │   │   └── filter.store.ts  # Zustand — active filters (client state)
+        │   ├── hooks/
+        │   │   ├── use-order-list.ts    # useInfiniteQuery — paginated
+        │   │   ├── use-order-detail.ts  # useQuery — single order
+        │   │   └── use-create-order.ts  # useMutation — invalidates list
+        │   ├── application/
+        │   │   └── order.service.ts
+        │   ├── repositories/
+        │   │   └── order.repository.ts
+        │   ├── ui/
+        │   │   ├── order-list-page.tsx
+        │   │   └── order-card.tsx
+        │   ├── di/
+        │   │   ├── tokens.ts
+        │   │   └── container.ts
+        │   └── index.ts
+        │
+        └── billing/                 # Billing module (example)
+            ├── schemas/
+            ├── types/
+            ├── application/
+            ├── repositories/
+            ├── ui/
+            ├── di/
+            └── index.ts
+```
+
+---
+
 # Next.js 16 — Relevant Bits Only
 
 ## React Compiler (Stable, Opt-In)
@@ -63,6 +223,174 @@ No config needed. Webpack via `--webpack` opt-out.
 
 `params`, `searchParams` are async in page/layout. Since pages are thin shells that just instantiate module components, this only affects the route layer.
 
+## Environment Variables — `@t3-oss/env-nextjs`
+
+### Why T3 Env
+
+`process.env` has no type safety. `NEXT_PUBLIC_*` prefix is a convention, not enforced. T3 Env validates **at build time and runtime** — missing `API_BASE_URL` crashes the build, not the user. Server-only vars never leak to the client. Client vars get `NEXT_PUBLIC_*` prefix enforced.
+
+### Setup
+
+```bash
+bun add @t3-oss/env-nextjs zod
+```
+
+Zod is already a project dependency (form schemas) — no extra cost.
+
+### `src/env.ts` — Single Env Source
+
+```ts
+// src/env.ts
+import { createEnv } from '@t3-oss/env-nextjs';
+import { z } from 'zod';
+
+export const env = createEnv({
+  /**
+   * Server-only vars. Never sent to the browser.
+   * Accessible in: Server Components, Route Handlers, next.config.ts, DI container init.
+   */
+  server: {
+    NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+    API_BASE_URL: z.string().url(),
+    API_KEY: z.string().min(1),
+  },
+
+  /**
+   * Client vars. Must be prefixed with NEXT_PUBLIC_.
+   * Bundled into the client JS — no secrets here.
+   */
+  client: {
+    NEXT_PUBLIC_API_BASE_URL: z.string().url(),
+    NEXT_PUBLIC_APP_NAME: z.string().min(1),
+  },
+
+  runtimeEnv: {
+    NODE_ENV: process.env.NODE_ENV,
+    API_BASE_URL: process.env.API_BASE_URL,
+    API_KEY: process.env.API_KEY,
+    NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL,
+    NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
+  },
+
+  skipValidation: process.env.SKIP_ENV_VALIDATION === 'true',
+  emptyStringAsUndefined: true,
+});
+```
+
+### Usage — Replace All `process.env`
+
+```ts
+// Before
+baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api',
+
+// After
+import { env } from '@/env';
+baseURL: env.NEXT_PUBLIC_API_BASE_URL,
+```
+
+**Rules**:
+- Import `env` from `@/env` — never read `process.env` directly.
+- Server vars in server code only. T3 Env throws if client code imports a server var.
+- Client vars always `NEXT_PUBLIC_*` — T3 Env enforces the prefix.
+- `skipValidation` + `SKIP_ENV_VALIDATION=true` for Docker/CI builds.
+- Standalone output: add `transpilePackages: ["@t3-oss/env-nextjs", "@t3-oss/env-core"]` in next.config.ts.
+
+### `.env.example` — Template
+
+```bash
+# .env.example — commit this. Copy to .env.local for development.
+
+# Server
+API_BASE_URL=http://localhost:8080/api/v1
+API_KEY=dev-api-key
+
+# Client (NEXT_PUBLIC_ prefix required)
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8080/api/v1
+NEXT_PUBLIC_APP_NAME=MyApp
+```
+
+## next.config.ts — Security Headers
+
+### Principle
+
+Security headers are set once in `next.config.ts`, not in middleware or per-route. The `headers()` async function applies headers by path pattern. All security headers go on `/:path*` (global). CORS goes on `/api/:path*`.
+
+### TypeScript Config
+
+```ts
+// next.config.ts
+import type { NextConfig } from 'next';
+import { env } from '@/env';
+import createNextIntlPlugin from 'next-intl/plugin';
+
+const nextConfig: NextConfig = {
+  reactCompiler: true,
+  transpilePackages: ['@t3-oss/env-nextjs', '@t3-oss/env-core'],
+
+  async headers() {
+    const isProd = env.NODE_ENV === 'production';
+
+    return [
+      // Global security headers — all routes
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'X-DNS-Prefetch-Control', value: 'on' },
+          ...(isProd
+            ? [{ key: 'Strict-Transport-Security' as const, value: 'max-age=63072000; includeSubDomains; preload' }]
+            : []),
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+        ],
+      },
+      // CORS — API routes only
+      {
+        source: '/api/:path*',
+        headers: [
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+          { key: 'Access-Control-Allow-Methods', value: 'GET, POST, PUT, DELETE, OPTIONS' },
+          { key: 'Access-Control-Allow-Headers', value: 'Content-Type, Authorization' },
+        ],
+      },
+    ];
+  },
+};
+
+export default createNextIntlPlugin()(nextConfig);
+```
+
+### Header Summary
+
+| Header | Value | When | Why |
+|--------|-------|------|-----|
+| `X-DNS-Prefetch-Control` | `on` | always | DNS prefetch for external links |
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` | production only | HTTPS-only — breaks localhost/dev |
+| `X-Content-Type-Options` | `nosniff` | always | Block MIME-type sniffing |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | always | Strip path on cross-origin |
+| `X-Frame-Options` | `DENY` | always | Block clickjacking |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | always | Disable browser API access |
+
+### CSP (Content-Security-Policy)
+
+CSP is **not** set globally via `headers()` for a client-first app. Why:
+- Inline scripts/styles from Next.js's dev bundler conflict with strict `script-src` / `style-src`.
+- CSP is easier to iterate on via a `Content-Security-Policy-Report-Only` header in development.
+- Use `proxy.ts` for CSP so you can compute nonces dynamically if needed.
+
+If the project needs CSP: add `proxy.ts` with `nonce` generation, set `Content-Security-Policy` per-request. Not covered here — start with the six headers above.
+
+### Standalone Output (Docker)
+
+```ts
+// next.config.ts
+const nextConfig: NextConfig = {
+  output: 'standalone',
+  transpilePackages: ['@t3-oss/env-nextjs', '@t3-oss/env-core'],
+};
+```
+
 ---
 
 # Module Definition
@@ -82,7 +410,7 @@ src/
     auth/                       # Business capability
     dashboard/                  # Business capability
     settings/                   # Business capability
-    shared/                     # Cross-cutting — axios instance, types, utils
+    shared/                     # Cross-cutting — axios, logger, types, utils
 ```
 
 **Module = business capability.** Not a layer. Not a utility drawer.
@@ -107,12 +435,14 @@ src/
 
 ## Ports & Adapters (Hexagonal Architecture)
 
-Every module follows ports & adapters. Three layers, strict dependency direction.
+Every module follows ports & adapters. Strict dependency direction.
 
 ```
 src/modules/auth/
   schemas/                      # Zod validation schemas — request shapes
   types/                        # API response types, error types (plain interfaces)
+  stores/                       # Zustand stores — client state, factory receives services
+  hooks/                        # TanStack Query hooks — useQuery/useMutation wrappers
   application/                  # Services — thin orchestration, calls repositories
   repositories/                 # Data fetching — axios calls, returns response types
   ui/                           # React components — pages, forms, widgets
@@ -132,15 +462,18 @@ The backend owns the domain model. The frontend only needs to validate inputs an
 ## Dependency Direction
 
 ```
-ui → application → repositories
+ui → stores/hooks → application → repositories
 
 - `schemas/` depends on **nothing** — pure Zod, no React, no Next.js, no HTTP.
 - `types/` depends on **nothing** — pure TypeScript interfaces, no React, no Next.js, no HTTP.
-- `application/` depends on `types/` and `schemas/` — uses response types, inferred request types.
-- `repositories/` depends on `types/` — data fetching, axios calls, returns response types.
-- `ui/` depends on `application/` and `schemas/` — validates form input with Zod, calls services via `useResolve`.
+- `stores/` depends on `application/`, `types/` — receives services via factory, holds client state.
+- `hooks/` depends on `application/`, `types/` — wraps TanStack Query for components.
+- `application/` depends on `types/`, `schemas/`, `repositories/` — uses response types, inferred request types, calls repos.
+- `repositories/` depends on `types/`, `schemas/` — data fetching, axios calls, returns response types.
+- `ui/` depends on `stores/`, `hooks/`, `schemas/` — uses store actions/selectors, query hooks, Zod schemas. Never calls services directly.
 - `di/` depends on everything — wires the module.
 - `index.ts` re-exports only what other modules may use.
+  ```
 
 ## Package-by-Package
 
@@ -153,7 +486,7 @@ src/modules/auth/schemas/
   login.schema.ts                     # LoginRequest schema (form == request)
   register.schema.ts                  # RegisterRequest + registerFormSchema (form != request)
   change-password.schema.ts           # ChangePasswordRequest schema
-```
+  ```
 
 ```ts
 // src/modules/auth/schemas/login.schema.ts
@@ -220,6 +553,8 @@ const form = useForm({
 - Always export both the form schema and the request type. Form component imports `FormSchema`, service imports `Request`.
 - Schemas are passed to TanStack Form's `validators.onSubmit` — form calls `schema.safeParse` internally via `zodValidator()`.
 - Services receive already-validated data from the form. No manual `safeParse` in components.
+- **Zod validates ALL rules at once** — every constraint on a field runs, all errors collected. `.email()` + `.min(1)` + `.max(255)` all fire simultaneously. Zod's default is eager collection (no `.abortEarly`). User sees every validation failure on first submit, not one-at-a-time whack-a-mole.
+- **Generic error messages, not rule-specific** — prefer `'Invalid email address'` not `'Email must contain @'`. Users understand the field label + "invalid" better than raw constraint descriptions.
 
 ### `types/` — API Response Types. Plain Interfaces. Zero Dependencies.
 
@@ -229,7 +564,7 @@ What the backend returns. Plain TypeScript — no Zod, no React, no HTTP.
 src/modules/auth/types/
   responses.ts             # LoginResponse, RegisterResponse, RefreshResponse
   errors.ts                # API error shapes
-```
+  ```
 
 ```ts
 // src/modules/auth/types/responses.ts
@@ -280,11 +615,13 @@ Thin orchestration. Services receive repositories via constructor injection. Ser
 ```
 src/modules/auth/application/
   auth.service.ts          # AuthService — login, register, logout, refresh
-```
+  ```
 
 ```ts
 // src/modules/auth/application/auth.service.ts
-import { injectable } from 'tsyringe';
+import { inject, injectable } from 'tsyringe';
+import { SHARED_TOKENS } from '@/modules/shared';
+import type { ILogger } from '@/modules/shared/types/logger';
 import type { UserDto } from '../types/responses';
 import type { AuthRepository } from '../repositories/auth.repository';
 import type { LoginRequest } from '../schemas/login.schema';
@@ -299,17 +636,26 @@ export interface AuthService {
 
 @injectable()
 export class AuthServiceImpl implements AuthService {
+  private readonly log: ILogger;
+
   constructor(
+    @inject(SHARED_TOKENS.Logger) logger: ILogger,
     private readonly authRepo: AuthRepository,
-  ) {}
+  ) {
+    this.log = logger.child({ module: 'auth', layer: 'application' });
+  }
 
   async login(input: LoginRequest): Promise<UserDto> {
+    this.log.info({ email: input.email }, 'login attempt');
     const { user } = await this.authRepo.login(input);
+    this.log.info({ userId: user.id }, 'login success');
     return user;
   }
 
   async register(input: RegisterRequest): Promise<UserDto> {
+    this.log.info({ email: input.email }, 'register attempt');
     const { user } = await this.authRepo.register(input);
+    this.log.info({ userId: user.id }, 'register success');
     return user;
   }
 
@@ -327,6 +673,7 @@ export class AuthServiceImpl implements AuthService {
 - Services depend on `repositories/` types directly — the repository IS the data-fetching contract.
 - Thin orchestration — unpack response DTO, return what the UI needs.
 - No HTTP concerns. No `axios`, no `Result<T>`, no error normalization. Repositories handle that.
+- Inject `ILogger` via `SHARED_TOKENS.Logger`, create child with `{ module, layer }`.
 
 ### `repositories/` — Data Fetching
 
@@ -335,26 +682,38 @@ Repositories handle all data fetching. One repository per backend resource. Inje
 ```
 src/modules/auth/repositories/
   auth.repository.ts       # AuthRepository — login, register, logout, refresh
-```
+  ```
 
 ```ts
 // src/modules/auth/repositories/auth.repository.ts
 import { inject, injectable } from 'tsyringe';
 import type { AxiosInstance } from 'axios';
 import { SHARED_TOKENS } from '@/modules/shared';
+import type { ILogger } from '@/modules/shared/types/logger';
 import type { LoginResponse, RegisterResponse, TokenPair } from '../types/responses';
 import type { LoginRequest } from '../schemas/login.schema';
 import type { RegisterRequest } from '../schemas/register.schema';
 
 @injectable()
 export class AuthRepository {
+  private readonly log: ILogger;
+
   constructor(
+    @inject(SHARED_TOKENS.Logger) logger: ILogger,
     @inject(SHARED_TOKENS.ApiClient) private readonly apiClient: AxiosInstance,
-  ) {}
+  ) {
+    this.log = logger.child({ module: 'auth', layer: 'repository' });
+  }
 
   async login(req: LoginRequest): Promise<LoginResponse> {
-    const { data } = await this.apiClient.post<LoginResponse>('/auth/login', req);
-    return data;
+    this.log.debug({ method: 'POST', path: '/auth/login' }, 'api request');
+    try {
+      const { data } = await this.apiClient.post<LoginResponse>('/auth/login', req);
+      return data;
+    } catch (err) {
+      this.log.error({ method: 'POST', path: '/auth/login', error: err }, 'api error');
+      throw err;
+    }
   }
 
   async register(input: RegisterRequest): Promise<RegisterResponse> {
@@ -376,13 +735,14 @@ export class AuthRepository {
 **Repository rules**:
 - One repository per resource. No interface abstraction — the class IS the contract.
 - Inject `SHARED_TOKENS.ApiClient` (`AxiosInstance`) — the singleton axios instance.
+- Inject `ILogger` via `SHARED_TOKENS.Logger`, create child with `{ module, layer }`.
 - Return `response.data` — strip axios envelope at this layer.
 - Throw on non-2xx — axios does this by default. `AxiosError` carries the backend error body.
 - No `Result<T>`, no `HttpClient`. Direct. Simple.
 
 ### `ui/` — React Components
 
-All `'use client'`. Pages, forms, widgets. Depends on `application/` — resolves services via `useResolve`. Forms use TanStack Form with Zod adapter — schema validation, typed fields, form state managed by TanStack. Never calls `axios`/`fetch` directly. Never imports from `repositories/`.
+All `'use client'`. Pages, forms, widgets. Depends on `stores/` and `hooks/` — never calls services directly. Forms use TanStack Form with Zod adapter + shared `FormField` component. Never calls `axios`/`fetch` directly. Never imports from `repositories/`.
 
 ```
 src/modules/auth/ui/
@@ -404,84 +764,82 @@ import { useResolve } from '@/app/_lib/di/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { loginSchema } from '../schemas/login.schema';
+import { FormField } from '@/modules/shared/ui/form-field';
+import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 
 export function LoginForm() {
   const authService = useResolve<AuthService>(AUTH_TOKENS.AuthService);
+  const te = useTranslations('common.errors');
+  const t = useTranslations('auth.LoginPage.LoginForm');
   const [error, setError] = useState<string | null>(null);
 
   const form = useForm({
     defaultValues: { email: '', password: '' },
     validatorAdapter: zodValidator(),
-    validators: {
-      onSubmit: loginSchema,
-    },
+    validators: { onSubmit: loginSchema },
     onSubmit: async ({ value }) => {
       setError(null);
       try {
         await authService.login(value);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Login failed');
+        setError(err instanceof Error ? err.message : te('generic'));
       }
     },
   });
 
   return (
     <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        form.handleSubmit();
-      }}
+      onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); form.handleSubmit(); }}
+      className="flex flex-col gap-4 w-full max-w-md mx-auto"
+      noValidate
     >
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p role="alert" className="bg-destructive/10 text-destructive text-sm rounded-md px-4 py-2">
+          {error}
+        </p>
+      )}
 
-      <form.Field
-        name="email"
-        children={(field) => (
-          <>
-            <input
-              type="email"
-              name={field.name}
-              value={field.state.value}
-              onBlur={field.handleBlur}
-              onChange={(e) => field.handleChange(e.target.value)}
-              placeholder="Email"
-            />
-            {field.state.meta.errors.length > 0 && (
-              <em>{field.state.meta.errors[0]}</em>
-            )}
-          </>
+      <form.Field name="email">
+        {(field) => (
+          <FormField
+            field={field}
+            label={t('emailLabel')}
+            type="email"
+            autoComplete="email"
+            placeholder={t('emailPlaceholder')}
+          />
         )}
-      />
+      </form.Field>
 
-      <form.Field
-        name="password"
-        children={(field) => (
-          <>
-            <input
-              type="password"
-              name={field.name}
-              value={field.state.value}
-              onBlur={field.handleBlur}
-              onChange={(e) => field.handleChange(e.target.value)}
-              placeholder="Password"
-            />
-            {field.state.meta.errors.length > 0 && (
-              <em>{field.state.meta.errors[0]}</em>
-            )}
-          </>
+      <form.Field name="password">
+        {(field) => (
+          <FormField
+            field={field}
+            label={t('passwordLabel')}
+            type="password"
+            autoComplete="current-password"
+            placeholder={t('passwordPlaceholder')}
+            rightLabel={
+              <a href="/forgot-password" className="text-xs text-primary hover:underline">
+                {t('forgotPassword')}
+              </a>
+            }
+          />
         )}
-      />
+      </form.Field>
 
-      <form.Subscribe
-        selector={(state) => [state.canSubmit, state.isSubmitting]}
-        children={([canSubmit, isSubmitting]) => (
-          <button type="submit" disabled={!canSubmit}>
-            {isSubmitting ? 'Signing in...' : 'Sign In'}
+      <form.Subscribe selector={(state) => [state.canSubmit, state.isSubmitting]}>
+        {([canSubmit, isSubmitting]) => (
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="w-full h-10 bg-primary text-primary-foreground rounded-md font-medium text-sm hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isSubmitting ? t('loadingButton') : t('submitButton')}
           </button>
         )}
-      />
+      </form.Subscribe>
     </form>
   );
 }
@@ -497,50 +855,61 @@ import { useResolve } from '@/app/_lib/di/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { registerSchema } from '../schemas/register.schema';
+import { FormField } from '@/modules/shared/ui/form-field';
+import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 
 export function RegisterForm() {
   const authService = useResolve<AuthService>(AUTH_TOKENS.AuthService);
+  const te = useTranslations('common.errors');
+  const t = useTranslations('auth.RegisterPage.RegisterForm');
   const [error, setError] = useState<string | null>(null);
 
   const form = useForm({
     defaultValues: { email: '', password: '', name: '' },
     validatorAdapter: zodValidator(),
-    validators: {
-      onSubmit: registerSchema,
-    },
+    validators: { onSubmit: registerSchema },
     onSubmit: async ({ value }) => {
       setError(null);
       try {
         await authService.register(value);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Registration failed');
+        setError(err instanceof Error ? err.message : te('generic'));
       }
     },
   });
 
   return (
     <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        form.handleSubmit();
-      }}
+      onSubmit={(e) => { e.preventDefault(); e.stopPropagation(); form.handleSubmit(); }}
+      className="flex flex-col gap-4 w-full max-w-md mx-auto"
+      noValidate
     >
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p role="alert" className="bg-destructive/10 text-destructive text-sm rounded-md px-4 py-2">
+          {error}
+        </p>
+      )}
 
-      <form.Field name="name" children={...} />
-      <form.Field name="email" children={...} />
-      <form.Field name="password" children={...} />
+      <form.Field name="name">
+        {(field) => <FormField field={field} label={t('nameLabel')} type="text" autoComplete="name" placeholder={t('namePlaceholder')} />}
+      </form.Field>
 
-      <form.Subscribe
-        selector={(state) => [state.canSubmit, state.isSubmitting]}
-        children={([canSubmit, isSubmitting]) => (
-          <button type="submit" disabled={!canSubmit}>
-            {isSubmitting ? 'Creating account...' : 'Create Account'}
+      <form.Field name="email">
+        {(field) => <FormField field={field} label={t('emailLabel')} type="email" autoComplete="email" placeholder={t('emailPlaceholder')} />}
+      </form.Field>
+
+      <form.Field name="password">
+        {(field) => <FormField field={field} label={t('passwordLabel')} type="password" autoComplete="new-password" placeholder={t('passwordPlaceholder')} />}
+      </form.Field>
+
+      <form.Subscribe selector={(state) => [state.canSubmit, state.isSubmitting]}>
+        {([canSubmit, isSubmitting]) => (
+          <button type="submit" disabled={!canSubmit} className="w-full h-10 bg-primary text-primary-foreground rounded-md font-medium text-sm hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+            {isSubmitting ? t('loadingButton') : t('submitButton')}
           </button>
         )}
-      />
+      </form.Subscribe>
     </form>
   );
 }
@@ -577,10 +946,12 @@ src/modules/auth/di/
 import type { InjectionToken } from 'tsyringe';
 import type { AuthService } from '../application/auth.service';
 import type { AuthRepository } from '../repositories/auth.repository';
+import type { AuthStore } from '../stores/auth.store';
 
 export const AUTH_TOKENS = {
   AuthService: Symbol.for('auth.AuthService') as unknown as InjectionToken<AuthService>,
   AuthRepository: Symbol.for('auth.AuthRepository') as unknown as InjectionToken<AuthRepository>,
+  AuthStore: Symbol.for('auth.AuthStore') as unknown as InjectionToken<AuthStore>,
 } as const;
 ```
 
@@ -590,6 +961,7 @@ import { container as rootContainer } from '@/app/_lib/di/container';
 import { AUTH_TOKENS } from './tokens';
 import { AuthServiceImpl } from '../application/auth.service';
 import { AuthRepository } from '../repositories/auth.repository';
+import { createAuthStore } from '../stores/auth.store';
 
 export function initializeAuthModule(): void {
   const childContainer = rootContainer.createChildContainer();
@@ -602,6 +974,14 @@ export function initializeAuthModule(): void {
   // Application — services
   childContainer.register(AUTH_TOKENS.AuthService, {
     useClass: AuthServiceImpl,
+  });
+
+  // Stores — created once via factory, reused as singleton
+  childContainer.register(AUTH_TOKENS.AuthStore, {
+    useFactory: (c) => {
+      const authService = c.resolve<AuthService>(AUTH_TOKENS.AuthService);
+      return createAuthStore(authService);
+    },
   });
 }
 ```
@@ -640,6 +1020,8 @@ src/modules/auth/
   types/
     responses.ts
     errors.ts
+  stores/
+    auth.store.ts
   application/
     auth.service.ts
   repositories/
@@ -657,6 +1039,21 @@ src/modules/auth/
   index.ts
 ```
 
+## Module Layer Order
+
+```
+schemas/     →  depends on nothing (pure Zod)
+types/       →  depends on nothing (pure TS interfaces)
+stores/      →  depends on application/, types/
+hooks/       →  depends on application/, types/
+application/ →  depends on types/, schemas/, repositories/
+repositories/ → depends on types/, schemas/, shared (axios, logger)
+ui/          →  depends on stores/, hooks/, schemas/
+di/          →  depends on everything — wires the module
+```
+
+`stores/` and `hooks/` sit between `application/` and `ui/`. They resolve services from DI, hold client state, and expose query/mutation hooks. UI components consume them — never call services directly (use store actions) and never call `useQuery`/`useMutation` directly (use hooks).
+
 ## Type Visibility Summary
 
 | Layer | Visibility | Imported By |
@@ -665,11 +1062,13 @@ src/modules/auth/
 | `schemas/` inferred types | `export` | `repositories/` (request types), `ui/`, `application/` |
 | `types/` response interfaces | `export` | `application/`, `repositories/`, `ui/` |
 | `types/` error shapes | `export` | `application/`, `ui/` |
-| `application/` service interface | `export` | `ui/`, other modules' `di/` |
+| `stores/` | `export` via barrel | `ui/`, other modules' `di/` |
+| `hooks/` | `export` via barrel | `ui/` |
+| `application/` service interface | `export` | `stores/`, `hooks/`, `ui/`, other modules' `di/` |
 | `application/` service impl | `export` but only `di/` imports it | `di/container.ts` |
 | `repositories/` classes | `export` | `di/` (wires), `application/` (imports class type), other modules' `di/` |
 | `ui/` components | `export` | `app/` routes, other modules' layouts |
-| `di/tokens.ts` | `export` | `ui/` (useResolve), other modules' `di/` |
+| `di/tokens.ts` | `export` | `stores/`, `hooks/`, `ui/` (useResolve), other modules' `di/` |
 | `di/container.ts` init fn | `export` | root `DIProvider` |
 
 ---
@@ -684,13 +1083,18 @@ Every page is a thin wrapper:
 
 ```tsx
 // app/(auth)/login/page.tsx
-'use client';
-
+import type { Metadata } from 'next';
 import { LoginPage } from '@/modules/auth';
+
+export const metadata: Metadata = {
+  title: 'Sign In',
+  description: 'Sign in to your account to access your dashboard.',
+};
+
 export default LoginPage;
 ```
 
-That's it. One import, one export. Pages are the thinnest possible shell.
+That's it. One import, one export. Metadata resolved server-side, component renders client-side. Pages are the thinnest possible shell.
 
 ## Route Groups
 
@@ -734,6 +1138,12 @@ bun add tsyringe reflect-metadata
 bun add @tanstack/react-form @tanstack/zod-form-adapter
 bun add @tanstack/react-query
 bun add tailwindcss @tailwindcss/postcss postcss clsx
+bun add @t3-oss/env-nextjs zod
+bun add axios
+bun add pino
+bun add -D @types/pino
+bun add next-intl
+bun add zustand
 ```
 
 ```json
@@ -860,11 +1270,13 @@ Single entry point that initializes all modules in dependency order.
 
 ```ts
 // src/modules/registry.ts
+import { initializeSharedModule } from '@/modules/shared';
 import { initializeAuthModule } from '@/modules/auth';
 import { initializeDashboardModule } from '@/modules/dashboard';
 import { initializeBillingModule } from '@/modules/billing';
 
 export function initializeAllModules(): void {
+  initializeSharedModule();       // Logger + ApiClient first — everything depends on them
   initializeAuthModule();         // no deps
   initializeDashboardModule();    // depends on auth
   initializeBillingModule();      // depends on auth, dashboard
@@ -874,19 +1286,28 @@ export function initializeAllModules(): void {
 ## Root Layout — Wire Providers
 
 ```tsx
-// app/layout.tsx
-import { QueryProvider } from './_lib/query/provider';
-import { DIProvider } from './_lib/di/provider';
+// app/[locale]/layout.tsx
+import { NextIntlClientProvider } from 'next-intl';
+import { QueryProvider } from '@/app/_lib/query/provider';
+import { DIProvider } from '@/app/_lib/di/provider';
+import type { LayoutProps } from '@/app/[locale]/layout';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({
+  children,
+  params,
+}: LayoutProps<'/[locale]'>) {
+  const { locale } = await params;
+
   return (
-    <html lang="en">
+    <html lang={locale}>
       <body>
-        <QueryProvider>
-          <DIProvider>
-            {children}
-          </DIProvider>
-        </QueryProvider>
+        <NextIntlClientProvider>
+          <QueryProvider>
+            <DIProvider>
+              {children}
+            </DIProvider>
+          </QueryProvider>
+        </NextIntlClientProvider>
       </body>
     </html>
   );
@@ -925,44 +1346,129 @@ export const AUTH_TOKENS = {
 
 # Shared Kernel — `src/modules/shared/`
 
-## Axios Instance
+## Logger — `ILogger` Interface + `PinoLogger` Implementation
 
-One pre-configured axios instance. Every API client imports it. Handles base URL, credentials, auth headers via interceptor.
+### Why Interface-Abstracted
 
-```bash
-bun add axios
+Modules depend on `ILogger`, never `pino.Logger`. Swap pino for winston/bunyan/console without touching module code. Same pattern as `axios` — the concrete tool is an infrastructure detail.
+
+### `ILogger` — Contract
+
+```ts
+// src/modules/shared/types/logger.ts
+export interface ILogger {
+  debug(obj: Record<string, unknown>, msg?: string): void;
+  info(obj: Record<string, unknown>, msg?: string): void;
+  warn(obj: Record<string, unknown>, msg?: string): void;
+  error(obj: Record<string, unknown>, msg?: string): void;
+  child(bindings: Record<string, unknown>): ILogger;
+}
 ```
+
+No `trace`/`fatal` — four levels enough for client-frontend. Every method takes object as first argument — structured logging, not string interpolation. **No string-first overload**: `logger.info('user logged in')` banned. Always pass context: `logger.info({ userId: 'abc' }, 'user logged in')`.
+
+### Token
 
 ```ts
 // src/modules/shared/di/tokens.ts
 import type { InjectionToken } from 'tsyringe';
 import type { AxiosInstance } from 'axios';
+import type { ILogger } from '../types/logger';
 
 export const SHARED_TOKENS = {
   ApiClient: Symbol.for('shared.ApiClient') as unknown as InjectionToken<AxiosInstance>,
+  Logger: Symbol.for('shared.Logger') as unknown as InjectionToken<ILogger>,
 } as const;
 ```
+
+### `PinoLogger` — Implementation
+
+```ts
+// src/modules/shared/infrastructure/pino-logger.ts
+import pino, { type Logger as PinoInstance } from 'pino';
+import type { ILogger } from '../types/logger';
+
+const isBrowser = typeof window !== 'undefined';
+const isProd = process.env.NODE_ENV === 'production';
+
+function createRootPino(): PinoInstance {
+  if (isBrowser) {
+    return pino({
+      level: isProd ? 'info' : 'debug',
+      transport: isProd
+        ? undefined
+        : {
+            target: 'pino/browser',
+            options: {
+              transmit: {
+                send: (_level: string, logEvent: { messages: unknown[] }) => {
+                  const [obj, msg] = logEvent.messages;
+                  const prefix = obj && typeof obj === 'object' && 'module' in obj
+                    ? `[${(obj as Record<string, string>).module}]`
+                    : '';
+                  console.log(prefix, msg ?? obj);
+                },
+              },
+            },
+          },
+      browser: { asObject: true },
+    });
+  }
+
+  return pino({
+    level: isProd ? 'info' : 'debug',
+    ...(isProd
+      ? {}
+      : {
+          transport: {
+            target: 'pino-pretty',
+            options: { colorize: true, translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
+          },
+        }),
+  });
+}
+
+const rootPino = createRootPino();
+
+export class PinoLogger implements ILogger {
+  constructor(private readonly pino: PinoInstance) {}
+
+  debug(obj: Record<string, unknown>, msg?: string): void { this.pino.debug(obj, msg); }
+  info(obj: Record<string, unknown>, msg?: string): void { this.pino.info(obj, msg); }
+  warn(obj: Record<string, unknown>, msg?: string): void { this.pino.warn(obj, msg); }
+  error(obj: Record<string, unknown>, msg?: string): void { this.pino.error(obj, msg); }
+  child(bindings: Record<string, unknown>): ILogger {
+    return new PinoLogger(this.pino.child(bindings));
+  }
+}
+
+export const rootLogger: ILogger = new PinoLogger(rootPino);
+```
+
+### DI Registration — Logger First
 
 ```ts
 // src/modules/shared/di/container.ts
 import { container as rootContainer } from '@/app/_lib/di/container';
+import { env } from '@/env';
 import axios from 'axios';
 import { SHARED_TOKENS } from './tokens';
+import { rootLogger } from '../infrastructure/pino-logger';
 
 export function initializeSharedModule(): void {
+  // Logger — register first, everything depends on it
+  rootContainer.register(SHARED_TOKENS.Logger, { useValue: rootLogger });
+
+  // Axios — singleton apiClient
   const apiClient = axios.create({
-    baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? '/api',
+    baseURL: env.NEXT_PUBLIC_API_BASE_URL,
     withCredentials: true,
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
   });
 
   apiClient.interceptors.request.use((config) => {
     const token = getAuthToken();
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   });
 
@@ -971,36 +1477,43 @@ export function initializeSharedModule(): void {
     async (error) => {
       if (error.response?.status === 401 && !error.config._retry) {
         error.config._retry = true;
-        // Refresh token logic — call /auth/refresh, update stored token, retry
       }
       return Promise.reject(error);
     },
   );
 
-  rootContainer.register(SHARED_TOKENS.ApiClient, {
-    useValue: apiClient,
-  });
+  rootContainer.register(SHARED_TOKENS.ApiClient, { useValue: apiClient });
 }
 
 function getAuthToken(): string | null {
-  // Read from cookie or auth store
   return null;
 }
 ```
 
-```ts
-// src/modules/shared/index.ts
-export { SHARED_TOKENS } from './di/tokens';
-export { initializeSharedModule } from './di/container';
-```
+### Logger Rules
+
+| Rule | Why |
+|------|-----|
+| Modules depend on `ILogger`, never `pino.Logger` | Swap implementation without touching module code |
+| Always pass object as first arg: `logger.info({ userId }, msg)` | Structured logs. Greppable. No string-only logs. |
+| `logger.child({ module })` in constructor | Every log auto-tags its module. No manual `module:` strings. |
+| `logger.child({ layer })` for application vs repository | Debug filtering: `layer: 'repository'` shows HTTP logs only. |
+| One `.child()` per class in constructor | Bind once. Use through the instance's `this.log`. |
+| Browser dev: pretty console with `[module]` prefix | No raw JSON in devtools. `[auth] login success`. |
+| Production: structured JSON via pino transport | Collect to log aggregator (Datadog, Grafana, etc.) |
+| `SHARED_TOKENS.Logger` registered first | Everything depends on it. Register before axios, before modules. |
+
+## Axios Instance
+
+One pre-configured axios instance. Every API client imports it. Handles base URL, credentials, auth headers via interceptor.
 
 **What the singleton `apiClient` provides**:
 - Single axios instance — every API client injects the same instance via DI
-- `baseURL` — all paths are relative, no URL construction in modules
+- `baseURL` from `env.NEXT_PUBLIC_API_BASE_URL` — all paths relative, no URL construction
 - `withCredentials` — cookies sent cross-origin
 - Request interceptor — injects auth token, one place to change token source
 - Response interceptor — 401 handling, token refresh, centralized
-- API clients inject `SHARED_TOKENS.ApiClient` as `AxiosInstance` — no custom wrapper type needed
+- API clients inject `SHARED_TOKENS.ApiClient` as `AxiosInstance` — no custom wrapper type
 
 ## Shared API Error Type
 
@@ -1023,7 +1536,6 @@ apiClient.interceptors.response.use(
   (res) => res,
   (error: AxiosError<ApiError>) => {
     if (error.response) {
-      // Backend returned an error response — shape is ApiError
       const apiError: ApiError = {
         code: error.response.data?.code ?? 'http.error',
         message: error.response.data?.message ?? error.message,
@@ -1031,7 +1543,6 @@ apiClient.interceptors.response.use(
       };
       return Promise.reject(apiError);
     }
-    // Network error — no response
     return Promise.reject({
       code: 'network.error',
       message: error.message,
@@ -1042,12 +1553,180 @@ apiClient.interceptors.response.use(
 
 Components catch `ApiError` — always the same shape, whether backend error or network failure.
 
+## Shared Pagination Types
+
+```ts
+// src/modules/shared/types/pagination.ts
+
+export interface PaginationParams {
+  page: number;
+  pageSize: number;
+}
+
+export function createPaginationParams(page?: number, pageSize?: number): PaginationParams {
+  return {
+    page: Math.max(1, Math.min(page ?? 1, 50)),
+    pageSize: Math.max(1, Math.min(pageSize ?? 20, 100)),
+  };
+}
+
+export interface PaginationMetadata {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  pagination: PaginationMetadata;
+}
+```
+
+## FormField & FieldError — Shared UI Components
+
+Form fields use reusable components, not raw input JSX. `FieldError` renders ALL errors for a field, not just the first one. Zod collects every failure — UX matches.
+
+### `FieldError`
+
+```tsx
+// src/modules/shared/ui/field-error.tsx
+'use client';
+
+import { cn } from '@/modules/shared/utils/cn';
+
+interface FieldErrorProps {
+  errors: unknown[] | undefined;
+  className?: string;
+}
+
+export function FieldError({ errors, className }: FieldErrorProps) {
+  if (!errors?.length) return null;
+
+  return (
+    <ul className={cn('text-xs text-destructive flex flex-col gap-0.5 mt-1', className)}>
+      {errors.map((err, i) => {
+        const message =
+          typeof err === 'string'
+            ? err
+            : typeof err === 'object' && err !== null && 'message' in err
+              ? (err as { message: string }).message
+              : null;
+        if (!message) return null;
+        return (
+          <li key={i} className="flex items-start gap-1">
+            <span aria-hidden="true" className="select-none">&bull;</span>
+            <span>{message}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+```
+
+**Why `unknown[]`**: TanStack Form's `field.state.meta.errors` is `unknown[]`. Zod issues are objects with `.message`, string error maps return `string[]`. The component normalizes both. No cast at call site.
+
+### `FormField`
+
+```tsx
+// src/modules/shared/ui/form-field.tsx
+'use client';
+
+import type { ReactNode } from 'react';
+import { cn } from '@/modules/shared/utils/cn';
+import { FieldError } from './field-error';
+
+interface FormFieldProps {
+  field: {
+    name: string;
+    state: {
+      value: string;
+      meta: { errors: unknown[] };
+    };
+    handleChange: (value: string) => void;
+    handleBlur: () => void;
+  };
+  label: string;
+  type?: 'text' | 'email' | 'password' | 'number' | 'tel' | 'url';
+  autoComplete?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  rightLabel?: ReactNode;
+  rightElement?: ReactNode;
+  className?: string;
+}
+
+export function FormField({
+  field,
+  label,
+  type = 'text',
+  autoComplete,
+  placeholder,
+  disabled = false,
+  rightLabel,
+  rightElement,
+  className,
+}: FormFieldProps) {
+  const hasErrors = field.state.meta.errors.length > 0;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className={rightLabel ? 'flex items-center justify-between' : ''}>
+        <label htmlFor={field.name} className="text-sm font-medium text-foreground">
+          {label}
+        </label>
+        {rightLabel}
+      </div>
+
+      <div className={rightElement ? 'relative' : ''}>
+        <input
+          id={field.name}
+          name={field.name}
+          type={type}
+          required
+          autoComplete={autoComplete}
+          placeholder={placeholder ?? label}
+          disabled={disabled}
+          value={field.state.value}
+          onChange={(e) => field.handleChange(e.target.value)}
+          onBlur={field.handleBlur}
+          className={cn(
+            'w-full h-9 rounded-md border bg-background px-3 py-1 text-sm text-foreground',
+            'placeholder:text-muted-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+            'disabled:cursor-not-allowed disabled:opacity-50',
+            hasErrors && 'border-destructive focus-visible:ring-destructive',
+            rightElement && 'pr-10',
+            className,
+          )}
+        />
+        {rightElement}
+      </div>
+
+      <FieldError errors={field.state.meta.errors} />
+    </div>
+  );
+}
+```
+
+**Key details**:
+- `noValidate` on `<form>` — disables browser's native validation bubble. Zod owns validation.
+- `field.handleBlur` passed to input — TanStack Form marks field as touched, triggers validation display.
+- `hasErrors` on input border — destructive border + ring color. Field visually "breaks" alongside error list.
+- `<li>&bull;</li>` bullet — accessible (`aria-hidden`), non-selectable texture. Each error on its own line.
+- Server error (top `error` state) uses `destructive/10` bg — distinct from field errors. Server error = banner. Field error = inline list.
+- `FormField` is **pure presentational**. No logic. No Zod. Just wiring TanStack Form's `field` object to shadcn-styled DOM.
+
 ## What Belongs in Shared
 
+- `ILogger` + `PinoLogger` — interface-abstracted logger, DI-wired singleton
 - `apiClient` — pre-configured axios instance
 - `ApiError` type
+- `PaginationParams`, `PaginationMetadata`, `PaginatedResponse<T>` types
 - `useResolve` hook
 - DI infrastructure (root container)
+- `FormField` + `FieldError` — reusable form field components
 - Utility functions (`cn`, `formatDate`, etc.)
 - Reusable hooks (`useDebounce`, `useMediaQuery`)
 
@@ -1058,6 +1737,18 @@ Components catch `ApiError` — always the same shape, whether backend error or 
 - Any module-specific component
 - Any module-specific API client
 - Any business rule
+
+## Barrel
+
+```ts
+// src/modules/shared/index.ts
+export { SHARED_TOKENS } from './di/tokens';
+export { initializeSharedModule } from './di/container';
+export type { ILogger } from './types/logger';
+export type { ApiError } from './types/api-error';
+export { FormField } from './ui/form-field';
+export { FieldError } from './ui/field-error';
+```
 
 ---
 
@@ -1124,9 +1815,10 @@ Every page follows the same pattern:
 
 ```tsx
 // app/(dashboard)/page.tsx
-'use client';
-
+import type { Metadata } from 'next';
 import { DashboardPage } from '@/modules/dashboard';
+
+export const metadata: Metadata = { title: 'Dashboard' };
 export default DashboardPage;
 ```
 
@@ -1134,33 +1826,18 @@ With layout:
 
 ```tsx
 // app/(dashboard)/layout.tsx
-'use client';
-
 import { AuthGuard } from '@/modules/auth';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGuard>
-      <DashboardShell>
-        {children}
-      </DashboardShell>
+      <DashboardShell>{children}</DashboardShell>
     </AuthGuard>
   );
 }
 ```
 
-With loading:
-
-```tsx
-// app/(dashboard)/loading.tsx
-'use client';
-
-export default function DashboardLoading() {
-  return <DashboardSkeleton />;
-}
-```
-
-**Rule**: Pages are one-liners. Layouts compose module guards and shells. Loading states are module skeletons. Zero business logic at the route level.
+**Rule**: Pages are one-liners with optional static metadata. Layouts compose module guards and shells. Loading states are module skeletons. Zero business logic at the route level.
 
 ---
 
@@ -1169,23 +1846,27 @@ export default function DashboardLoading() {
 ```
 User action (click, submit)
   → ui/ form validates input with Zod schema
-    → ui/ calls service via useResolve(token) with typed request
-      → application/ service calls repository
-        → repositories/ calls apiClient (axios)
-          → external API
-        ← response data
-      ← service unpacks DTO, returns what UI needs
-    ← component updates state (useState / useReducer / Zustand)
+    → ui/ calls store action or hook
+      → stores/ calls application/ service
+        → application/ service calls repository
+          → repositories/ calls apiClient (axios)
+            → external API
+          ← response data
+        ← service unpacks DTO, returns what store needs
+      ← store updates state, hook caches result
+    ← component re-renders with new state
 ```
 
 Every step is a typed contract. No layer crosses another's boundary without conversion.
 
 ```
-ui/                         knows: service interface, Zod schemas, response types, React state
-application/                knows: response types, repository type, schema-inferred request types
-repositories/               knows: axios apiClient, response types, request types
-schemas/                    knows: nothing but Zod
-types/                      knows: nothing but its own interfaces
+ui/           knows: store hooks, query hooks, Zod schemas, FormField
+stores/       knows: service interface, types
+hooks/        knows: service interface, types, query keys
+application/  knows: response types, repository type, schema-inferred request types, ILogger
+repositories/ knows: axios apiClient, response types, request types, ILogger
+schemas/      knows: nothing but Zod
+types/        knows: nothing but its own interfaces
 ```
 
 ---
@@ -1212,30 +1893,28 @@ Zustand stores **client state** — the kind of state that lives beyond a single
 
 ## Where Stores Live
 
-Stores live in the module's `ui/` directory. They're UI state — they belong with the components that consume them.
+Stores live in `stores/` at module root — same level as `application/`, `repositories/`, `ui/`. They depend on services, consumed by components: not a UI subfolder, not an application detail. Own layer.
 
 ```
 src/modules/auth/
-  ui/
-    stores/
-      auth.store.ts          # Auth state — user, tokens, login status
+  stores/
+    auth.store.ts          # Auth state — user, tokens, login status
 ```
 
 For cross-module state (e.g., current user), export the store via the module's barrel:
 
 ```ts
 // src/modules/auth/index.ts
-export { useAuthStore } from './ui/stores/auth.store';
+export { useAuthStore } from './stores/auth.store';
 ```
 
-Shared/generic stores live in `src/modules/shared/ui/stores/`:
+Shared/generic stores live in `src/modules/shared/stores/`:
 
 ```
 src/modules/shared/
-  ui/
-    stores/
-      notification.store.ts  # Toast notifications — used by any module
-      theme.store.ts          # Dark/light mode
+  stores/
+    notification.store.ts  # Toast notifications — used by any module
+    theme.store.ts          # Dark/light mode
 ```
 
 ## Store Naming
@@ -1244,24 +1923,22 @@ src/modules/shared/
 - **Store hook**: `useXxxStore` — `useAuthStore`, `useDashboardStore`
 - **State type**: `XxxState` — `AuthState`, `DashboardState`
 - **Actions**: verb or `set` prefix — `login`, `logout`, `setUser`, `addItem`, `removeItem`
-- **Selector hooks** (optional): `useXxx` on exported selectors — `useCurrentUser`, `useIsAuthenticated`
 
 ## Store Factory Pattern — Injecting Services
 
 Stores that need services (API calls, business logic) receive them via a factory function. The store itself is created at DI initialization time, then registered as a singleton in the child container.
 
 ```ts
-// src/modules/auth/ui/stores/auth.store.ts
+// src/modules/auth/stores/auth.store.ts
 import { create } from 'zustand';
-import type { UserDto } from '../../types/responses';
-import type { AuthService } from '../../application/auth.service';
+import type { UserDto } from '../types/responses';
+import type { AuthService } from '../application/auth.service';
 
 interface AuthState {
   user: UserDto | null;
   isLoading: boolean;
   error: string | null;
 
-  // Actions
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   setUser: (user: UserDto | null) => void;
@@ -1300,44 +1977,19 @@ export function createAuthStore(authService: AuthService) {
 export type AuthStore = ReturnType<typeof createAuthStore>;
 ```
 
-**Why factory and not `useAuthStore.getState()` inside the service**: The service doesn't know about stores. The store knows about the service. Dependency direction: `ui/store → application/service`. Never the reverse. The store calls `authService.login()` — the service never calls `useAuthStore.getState().setUser()`.
+**Why factory and not `useAuthStore.getState()` inside the service**: The service doesn't know about stores. The store knows about the service. Dependency direction: `stores/ → application/`. Never the reverse.
 
 ## Register Store in DI Container
 
-The store factory is called during module initialization. The resulting hook type is registered so components can resolve it.
-
-```ts
-// src/modules/auth/di/tokens.ts
-import type { InjectionToken } from 'tsyringe';
-import type { AuthStore } from '../ui/stores/auth.store';
-
-export const AUTH_TOKENS = {
-  AuthService: Symbol.for('auth.AuthService') as unknown as InjectionToken<AuthService>,
-  AuthRepository: Symbol.for('auth.AuthRepository') as unknown as InjectionToken<AuthRepository>,
-  AuthStore: Symbol.for('auth.AuthStore') as unknown as InjectionToken<AuthStore>,
-} as const;
-```
-
 ```ts
 // src/modules/auth/di/container.ts
-import { container as rootContainer } from '@/app/_lib/di/container';
-import { AUTH_TOKENS } from './tokens';
-import { AuthServiceImpl } from '../application/auth.service';
-import { AuthRepository } from '../repositories/auth.repository';
-import { createAuthStore } from '../ui/stores/auth.store';
+import { createAuthStore } from '../stores/auth.store';
 
 export function initializeAuthModule(): void {
   const childContainer = rootContainer.createChildContainer();
 
-  // Repositories
-  childContainer.register(AUTH_TOKENS.AuthRepository, {
-    useClass: AuthRepository,
-  });
-
-  // Application
-  childContainer.register(AUTH_TOKENS.AuthService, {
-    useClass: AuthServiceImpl,
-  });
+  childContainer.register(AUTH_TOKENS.AuthRepository, { useClass: AuthRepository });
+  childContainer.register(AUTH_TOKENS.AuthService, { useClass: AuthServiceImpl });
 
   // Stores — created once via factory, reused as singleton
   childContainer.register(AUTH_TOKENS.AuthStore, {
@@ -1351,80 +2003,20 @@ export function initializeAuthModule(): void {
 
 ## Using Stores in Components
 
-Components resolve the store hook via `useResolve`, then use it like any Zustand store. For forms, combine Zustand store actions with TanStack Form:
+Components resolve the store hook via `useResolve`, then use it like any Zustand store:
 
 ```tsx
-// src/modules/auth/ui/login-form.tsx
 'use client';
-
-import { useForm } from '@tanstack/react-form';
-import { zodValidator } from '@tanstack/zod-form-adapter';
 import { useResolve } from '@/app/_lib/di/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
-import type { AuthStore } from './stores/auth.store';
-import { loginSchema } from '../schemas/login.schema';
-
-export function LoginForm() {
-  const useAuthStore = useResolve<AuthStore>(AUTH_TOKENS.AuthStore);
-  const { login, isLoading, error, clearError } = useAuthStore();
-
-  const form = useForm({
-    defaultValues: { email: '', password: '' },
-    validatorAdapter: zodValidator(),
-    validators: {
-      onSubmit: loginSchema,
-    },
-    onSubmit: async ({ value }) => {
-      clearError();
-      await login(value.email, value.password);
-    },
-  });
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        form.handleSubmit();
-      }}
-    >
-      {error && <p role="alert">{error}</p>}
-
-      <form.Field name="email" children={...} />
-      <form.Field name="password" children={...} />
-
-      <form.Subscribe
-        selector={(state) => [state.canSubmit, state.isSubmitting]}
-        children={([canSubmit, isSubmitting]) => (
-          <button type="submit" disabled={!canSubmit || isLoading}>
-            {isSubmitting || isLoading ? 'Signing in...' : 'Sign In'}
-          </button>
-        )}
-      />
-    </form>
-  );
-}
-```
-
-## Selectors — Fine-Grained Subscriptions
-
-Use selectors to prevent unnecessary re-renders. A component subscribing to `useAuthStore()` re-renders on ANY state change. Selectors narrow the subscription:
-
-```tsx
-// src/modules/auth/ui/user-avatar.tsx
-'use client';
-
-import { useResolve } from '@/app/_lib/di/use-resolve';
-import { AUTH_TOKENS } from '../di/tokens';
-import type { AuthStore } from './stores/auth.store';
+import type { AuthStore } from '../stores/auth.store';
 
 export function UserAvatar() {
   const useAuthStore = useResolve<AuthStore>(AUTH_TOKENS.AuthStore);
-  const user = useAuthStore((s) => s.user);   // only re-renders when user changes
-  const logout = useAuthStore((s) => s.logout); // action — stable reference
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
 
   if (!user) return null;
-
   return (
     <div>
       <span>{user.email}</span>
@@ -1434,102 +2026,20 @@ export function UserAvatar() {
 }
 ```
 
-```tsx
-// Selector for derived/computed values
-export function AuthGuard({ children }: { children: React.ReactNode }) {
-  const useAuthStore = useResolve<AuthStore>(AUTH_TOKENS.AuthStore);
-  const isAuthenticated = useAuthStore((s) => s.user !== null);
-  const isLoading = useAuthStore((s) => s.isLoading);
-
-  if (isLoading) return <Spinner />;
-  if (!isAuthenticated) return <Navigate to="/login" />;
-  return <>{children}</>;
-}
-```
-
-## Store + Service Together
-
-Some components need both — actions from the store AND direct service calls:
-
-```tsx
-// Component that reads state from store, calls service directly for one-shot action
-export function DashboardRefresh() {
-  const useDashboardStore = useResolve<DashboardStore>(DASHBOARD_TOKENS.DashboardStore);
-  const dashboardService = useResolve<DashboardService>(DASHBOARD_TOKENS.DashboardService);
-  const stats = useDashboardStore((s) => s.stats);
-  const setStats = useDashboardStore((s) => s.setStats);
-
-  const handleRefresh = async () => {
-    const fresh = await dashboardService.refreshStats(); // service call, not store action
-    setStats(fresh);
-  };
-
-  return (
-    <div>
-      <p>Orders: {stats.orderCount}</p>
-      <button onClick={handleRefresh}>Refresh</button>
-    </div>
-  );
-}
-```
-
-**Rule**: If the action is "mutate store state based on API result" and it's called from one place — put it in the component. If it's called from multiple components — put it in the store action.
-
-## When NOT to Put Logic in the Store
-
-| Don't | Do Instead |
-|-------|-----------|
-| Business validation in store actions | Service validates, store calls service |
-| API URL construction in store | Repository / axios handles URLs |
-| Token management in store | Axios interceptor in shared handles tokens |
-| Complex orchestration (call A, then B, then C) | Service orchestrates, store calls one service method |
-| Cross-module data aggregation | Service depends on other service via DI, store calls this service |
-
-Store actions should be thin — call service, set state. The service owns "how." The store owns "what just happened."
-
 ## Store Persistence — `zustand/middleware`
-
-For persistent state (survives page reload), use `persist` middleware. The store factory stays the same:
 
 ```ts
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AuthService } from '../../application/auth.service';
+import type { AuthService } from '../application/auth.service';
 
 export function createAuthStore(authService: AuthService) {
   return create<AuthState>()(
     persist(
-      (set) => ({
-        user: null,
-        isLoading: false,
-        error: null,
-
-        login: async (email, password) => {
-          set({ isLoading: true, error: null });
-          try {
-            const user = await authService.login({ email, password });
-            set({ user, isLoading: false });
-          } catch (err) {
-            set({
-              error: err instanceof Error ? err.message : 'Login failed',
-              isLoading: false,
-            });
-          }
-        },
-
-        logout: async () => {
-          await authService.logout();
-          set({ user: null });
-        },
-
-        setUser: (user) => set({ user }),
-        clearError: () => set({ error: null }),
-      }),
+      (set) => ({ /* ... */ }),
       {
-        name: 'auth-store',        // localStorage key
-        partialize: (state) => ({  // only persist these fields
-          user: state.user,
-        }),
+        name: 'auth-store',
+        partialize: (state) => ({ user: state.user }),
       },
     ),
   );
@@ -1546,8 +2056,8 @@ export function createAuthStore(authService: AuthService) {
 
 | Store Type | Location | Registered In | Consumed By |
 |-----------|----------|--------------|-------------|
-| Module store | `modules/<name>/ui/stores/<name>.store.ts` | `modules/<name>/di/container.ts` | Module's `ui/` components |
-| Shared store | `modules/shared/ui/stores/<name>.store.ts` | `modules/shared/di/container.ts` | Any module's `ui/` components |
+| Module store | `modules/<name>/stores/<name>.store.ts` | `modules/<name>/di/container.ts` | Module's `ui/` components |
+| Shared store | `modules/shared/stores/<name>.store.ts` | `modules/shared/di/container.ts` | Any module's `ui/` components |
 | Cross-module access | Via barrel `index.ts` of owning module | Owning module's DI | Other modules' components + DI |
 
 ## Store Rules
@@ -1578,11 +2088,9 @@ useState       → local state (form inputs toggle, one-shot flags)
 
 ## DI Setup
 
-TanStack Query needs no per-module DI registration. `QueryClient` is created once in `QueryProvider`. Hooks call `useQueryClient()` directly — it's a React context singleton.
+TanStack Query needs no per-module DI registration. `QueryClient` is created once in `QueryProvider`.
 
 ## Query Keys — Per-Module Key Factory
-
-Each module defines its query keys as a const object. Keys follow `[module, entity, ...params]` convention — same structure used by React Query for cache invalidation.
 
 ```ts
 // src/modules/orders/types/query-keys.ts
@@ -1595,68 +2103,27 @@ export const orderKeys = {
 };
 ```
 
-## Query Hooks — In `ui/hooks/`
+## Query Hooks — In `hooks/`
 
-Each module exposes `useXxx` hooks that wrap TanStack Query. Components never call `useQuery`/`useMutation` with raw API calls — they use the module's hooks.
+Each module exposes `useXxx` hooks that wrap TanStack Query. Hooks live in `hooks/` at module root — same level as `stores/`, `application/`, `ui/`. Own adapter layer.
 
 ```
 src/modules/orders/
-  ui/
-    hooks/
-      use-order-list.ts       # useOrderList — paginated list
-      use-order-detail.ts     # useOrderDetail — single order
-      use-create-order.ts     # useCreateOrder — mutation
+  hooks/
+    use-order-list.ts       # useOrderList — paginated list
+    use-order-detail.ts     # useOrderDetail — single order
+    use-create-order.ts     # useCreateOrder — mutation
 ```
 
-### Typed Pagination — Shared Types
-
-Mirrors the Go `pagination.Params` / `pagination.Metadata` split. Transport-agnostic input, transport-agnostic output.
+### List Hook — `useInfiniteQuery`
 
 ```ts
-// src/modules/shared/types/pagination.ts
-
-/** Transport-agnostic pagination input. Extracted from query params / UI state. */
-export interface PaginationParams {
-  page: number;
-  pageSize: number;
-}
-
-/** Creates validated params with defaults. Safety caps enforced. */
-export function createPaginationParams(page?: number, pageSize?: number): PaginationParams {
-  return {
-    page: Math.max(1, Math.min(page ?? 1, 50)),
-    pageSize: Math.max(1, Math.min(pageSize ?? 20, 100)),
-  };
-}
-
-/** Transport-agnostic pagination output. Built from API response metadata. */
-export interface PaginationMetadata {
-  page: number;
-  pageSize: number;
-  totalItems: number;
-  totalPages: number;
-}
-
-/** API response envelope for paginated lists. */
-export interface PaginatedResponse<T> {
-  data: T[];
-  pagination: PaginationMetadata;
-}
-```
-
-### List Hook — `useInfiniteQuery` for Cursor/Offset Pagination
-
-Use `useInfiniteQuery` for paginated lists. It handles page accumulation, `hasNextPage`, and `fetchNextPage` natively. The API client returns `PaginatedResponse<T>` and the hook flattens it for the UI.
-
-```ts
-// src/modules/orders/ui/hooks/use-order-list.ts
+// src/modules/orders/hooks/use-order-list.ts
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useResolve } from '@/app/_lib/di/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
 import type { OrderService } from '../../application/order.service';
 import type { OrderFilters } from '../../types/filters';
-import type { OrderDto } from '../../types/responses';
-import type { PaginationParams } from '@/modules/shared/types/pagination';
 import { createPaginationParams } from '@/modules/shared/types/pagination';
 
 interface UseOrderListOptions {
@@ -1683,96 +2150,10 @@ export function useOrderList({ filters, pageSize = 20 }: UseOrderListOptions) {
 }
 ```
 
-### Service — Returns `PaginatedResponse<T>`
-
-```ts
-// src/modules/orders/application/order.service.ts
-import type { PaginatedResponse, PaginationParams } from '@/modules/shared/types/pagination';
-import type { OrderDto } from '../types/responses';
-import type { OrderFilters } from '../types/filters';
-import type { OrderApiClient } from './ports';
-
-export interface OrderService {
-  list(filters: OrderFilters, params: PaginationParams): Promise<PaginatedResponse<OrderDto>>;
-  getById(id: string): Promise<OrderDto>;
-}
-
-@injectable()
-export class OrderServiceImpl implements OrderService {
-  constructor(private readonly orderApi: OrderApiClient) {}
-
-  async list(filters: OrderFilters, params: PaginationParams): Promise<PaginatedResponse<OrderDto>> {
-    const result = await this.orderApi.list({ ...filters, ...params });
-
-    if (result.kind === 'error') {
-      throw new Error(result.message);
-    }
-
-    return this.orderRepo.list({ ...filters, ...params }); // PaginatedResponse<OrderDto>
-  }
-
-  async getById(id: string): Promise<OrderDto> {
-    return this.orderRepo.getById(id);
-  }
-}
-```
-
-### Component — Paginated List UI
-
-```tsx
-// src/modules/orders/ui/order-list-page.tsx
-'use client';
-
-import { useOrderList } from './hooks/use-order-list';
-import { useState } from 'react';
-import type { OrderFilters } from '../types/filters';
-
-export function OrderListPage() {
-  const [filters, setFilters] = useState<OrderFilters>({ status: 'all' });
-  const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    isLoading,
-    isError,
-    refetch,
-  } = useOrderList({ filters, pageSize: 20 });
-
-  if (isLoading) return <OrderListSkeleton />;
-  if (isError) return <ErrorFallback onRetry={refetch} />;
-
-  const orders = data?.pages.flatMap((page) => page.data) ?? [];
-
-  return (
-    <div>
-      <OrderFiltersBar filters={filters} onChange={setFilters} />
-
-      {orders.length === 0 ? (
-        <EmptyState message="No orders found" />
-      ) : (
-        <div>
-          {orders.map((order) => (
-            <OrderCard key={order.id} order={order} />
-          ))}
-
-          <button
-            onClick={() => fetchNextPage()}
-            disabled={!hasNextPage || isFetchingNextPage}
-          >
-            {isFetchingNextPage ? 'Loading...' : hasNextPage ? 'Load More' : 'No more orders'}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
 ### Mutation Hook
 
 ```ts
-// src/modules/orders/ui/hooks/use-create-order.ts
+// src/modules/orders/hooks/use-create-order.ts
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useResolve } from '@/app/_lib/di/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
@@ -1796,16 +2177,14 @@ export function useCreateOrder() {
 
 | Rule | Why |
 |------|-----|
-| Query hooks live in `ui/hooks/` | UI concern — components consume them directly. |
+| Query hooks live in `hooks/` | Adapter layer between application and UI. Components consume them directly. |
 | One query hook per query type | `useOrderList`, `useOrderDetail` — not one generic `useQuery` wrapper. |
-| Query keys use `[module, entity, ...params]` | Cache invalidation by prefix: `['orders', 'list']` invalidates all list queries. |
-| `useInfiniteQuery` for paginated lists | `fetchNextPage` + `hasNextPage` built in. No manual page tracking. |
-| `PaginationParams` / `PaginationMetadata` are transport-agnostic | Shared types. No HTTP details (no `_links`, no `next_cursor`). |
-| API client returns `PaginatedResponse<T>` | `{ data: T[], pagination: PaginationMetadata }` — uniform shape. |
-| `staleTime` per query type | Lists: 30s default. Detail views: 60s. Invalidate on mutations. |
-| Mutation `onSuccess` invalidates affected query keys | Create/update/delete invalidates the list. Detail update invalidates detail. |
-| Service layer unpacks response DTOs | Repository returns raw response, service picks what UI needs. |
-| Query hooks don't call `useResolve` inside `queryFn` | `useResolve` is called once at component level, values captured in closure. |
+| Query keys use `[module, entity, ...params]` | Cache invalidation by prefix. |
+| `useInfiniteQuery` for paginated lists | `fetchNextPage` + `hasNextPage` built in. |
+| `PaginationParams` / `PaginationMetadata` are transport-agnostic | Shared types. No HTTP details. |
+| `staleTime` per query type | Lists: 30s. Detail: 60s. Invalidate on mutations. |
+| Mutation `onSuccess` invalidates affected query keys | Create/update/delete invalidates the list. |
+| Query hooks don't call `useResolve` inside `queryFn` | `useResolve` called once at component level, values captured in closure. |
 
 ---
 
@@ -1813,7 +2192,7 @@ export function useCreateOrder() {
 
 ## Principle
 
-Tailwind is the project's styling layer. No CSS modules, no styled-components, no inline styles. Every component uses Tailwind utility classes. Shared design tokens live in `tailwind.config.ts` theme extensions — per-module custom colors/spacing/typography don't belong there.
+Tailwind is the project's styling layer. No CSS modules, no styled-components, no inline styles. Every component uses Tailwind utility classes.
 
 ## Setup
 
@@ -1845,125 +2224,19 @@ export default config;
 }
 ```
 
-**Tailwind v4 key differences from v3**:
-- No `tailwind.config.ts` — everything is CSS `@theme`
-- No `content` config — Tailwind auto-detects source files
-- `@import 'tailwindcss'` replaces `@tailwind base/components/utilities`
-- `@theme` block replaces `theme.extend` in JS config
-- CSS variables for design tokens: `--color-*`, `--font-*`, `--spacing-*`
-- Legacy JS config still supported via `@config` directive, but prefer native CSS
-
-## Utility-First — Components
-
-Every component uses Tailwind classes directly in JSX. No abstraction, no `@apply` in component layers.
-
-```tsx
-// src/modules/auth/ui/login-form.tsx
-export function LoginForm() {
-  // ... form logic ...
-
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        form.handleSubmit();
-      }}
-      className="flex flex-col gap-4 w-full max-w-md mx-auto p-6 bg-white rounded-lg shadow-sm border border-gray-200"
-    >
-      {error && (
-        <p role="alert" className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">
-          {error}
-        </p>
-      )}
-
-      <form.Field
-        name="email"
-        children={(field) => (
-          <div className="flex flex-col gap-1">
-            <label htmlFor="email" className="text-sm font-medium text-gray-700">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              name={field.name}
-              value={field.state.value}
-              onBlur={field.handleBlur}
-              onChange={(e) => field.handleChange(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-            {field.state.meta.errors.length > 0 && (
-              <em className="text-xs text-red-500">{field.state.meta.errors[0]}</em>
-            )}
-          </div>
-        )}
-      />
-
-      /* ... password field ... */
-
-      <form.Subscribe
-        selector={(state) => [state.canSubmit, state.isSubmitting]}
-        children={([canSubmit, isSubmitting]) => (
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="w-full py-2 px-4 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {isSubmitting ? 'Signing in...' : 'Sign In'}
-          </button>
-        )}
-      />
-    </form>
-  );
-}
-```
-
-**Why no CSS modules / `styles.ts`**: One styling system = one mental model. Tailwind classes are co-located with markup — no file switching, no naming conflicts, dead code eliminated at build time.
-
-## Theme Extension — `globals.css`
-
-Theme is configured directly in CSS. Only project-wide design tokens. Module-specific colors don't belong here — use Tailwind's built-in palette or raw hex values in `className`.
-
-```css
-/* app/globals.css */
-@import 'tailwindcss';
-
-@theme {
-  --color-brand-50: #eef2ff;
-  --color-brand-500: #6366f1;
-  --color-brand-700: #4338ca;
-  --font-sans: 'Inter', system-ui, sans-serif;
-}
-```
-
-Usage: `bg-brand-500`, `text-brand-700`, `font-sans` — Tailwind generates these from the `@theme` keys automatically.
-
-## Layout & Spacing Patterns
-
-| Pattern | Classes |
-|--------|---------|
-| Page container | `max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8` |
-| Form card | `w-full max-w-md mx-auto p-6 bg-white rounded-lg shadow-sm border` |
-| Two-column form | `grid grid-cols-1 sm:grid-cols-2 gap-4` |
-| List → empty state | List has `divide-y`, empty shows `text-center py-12 text-gray-500` |
-| Loading skeleton | `animate-pulse bg-gray-200 rounded` on skeleton blocks |
-| Error banner | `bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded` |
-
 ## Tailwind Rules
 
 | Rule | Why |
 |------|-----|
 | Utility classes in JSX only | No `@apply`, no CSS modules, no `styles.ts`. One system. |
-| `className` order: layout → sizing → spacing → visual → state | Consistent scanning. `flex flex-col gap-4 w-full p-6 bg-white rounded shadow` |
-| Theme in CSS `@theme` block — no JS config | Tailwind v4 is CSS-first. `@theme { --color-brand-500: #6366f1 }` in `globals.css`. |
-| Design tokens in `@theme` are project-wide only | Module-specific colors use raw hex or built-in palette. |
-| No arbitrary values in production | `w-[327px]` is prototyping only. Use design tokens or standard spacing scale. |
+| `className` order: layout → sizing → spacing → visual → state | Consistent scanning. |
+| Theme in CSS `@theme` block — no JS config | Tailwind v4 is CSS-first. |
+| Design tokens in `@theme` are project-wide only | Module-specific colors use built-in palette or raw hex. |
+| No arbitrary values in production | `w-[327px]` is prototyping only. |
 | Responsive: mobile-first | `sm:`, `md:`, `lg:` prefixes. Default classes = mobile. |
-| `clsx` / `cn` for conditional classes | `cn('base-class', isActive && 'active-class')` — `clsx` is a dependency. |
-| Focus states on every interactive element | `focus:outline-none focus:ring-2 focus:ring-blue-500` — accessibility baseline. |
-| `disabled:` state on every button/input | `disabled:opacity-50 disabled:cursor-not-allowed` — visual feedback always. |
-| Tailwind v4: no `content` globs | Auto-detects source. No `tailwind.config.ts` `content` array to maintain. |
+| `cn` for conditional classes | `cn('base-class', isActive && 'active-class')`. |
+| Focus states on every interactive element | `focus-visible:outline-none focus-visible:ring-2` — accessibility baseline. |
+| `disabled:` state on every button/input | `disabled:opacity-50 disabled:cursor-not-allowed`. |
 | Tailwind v4: `@import 'tailwindcss'` | Replaces v3 `@tailwind base/components/utilities` directives. |
 
 ## `cn` Helper
@@ -1983,9 +2256,402 @@ bun add clsx
 
 ---
 
-# Naming Conventions
+# SEO — Metadata, Sitemap, Robots
 
-Follows the `typescript-react-naming-conventions` skill. Module-specific additions:
+## Principle
+
+SEO lives in the `app/` directory. Title template, metadataBase, Open Graph defaults, robots.txt, and sitemap are route-level concerns — not module concerns. Modules export page components; the app layer wraps them with search-optimized metadata.
+
+## How It Fits Client-First Architecture
+
+Module page components are `'use client'`. But `metadata` export and `generateMetadata` are **Server Component only**. Solution: `app/` pages remain Server Components that export metadata + render the module's client component.
+
+```tsx
+// app/(auth)/login/page.tsx
+import type { Metadata } from 'next';
+import { LoginPage } from '@/modules/auth';
+
+export const metadata: Metadata = {
+  title: 'Sign In',
+  description: 'Sign in to your account to access your dashboard.',
+};
+
+export default LoginPage;
+```
+
+## Root Layout — Global SEO Defaults
+
+Root layout sets the base URL, title template, and Open Graph defaults. `viewport` is a separate named export in Next.js 14+.
+
+```tsx
+// app/[locale]/layout.tsx
+import type { Metadata, Viewport } from 'next';
+import { env } from '@/env';
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: '#ffffff',
+};
+
+export const metadata: Metadata = {
+  metadataBase: new URL(env.NEXT_PUBLIC_API_BASE_URL),
+  title: {
+    template: '%s | Acme',
+    default: 'Acme — Project Management',
+  },
+  description: 'Acme helps teams ship faster with modular project management.',
+  keywords: ['project management', 'team collaboration', 'productivity'],
+  authors: [{ name: 'Acme Inc.' }],
+  creator: 'Acme Inc.',
+  publisher: 'Acme Inc.',
+  formatDetection: { email: false, address: false, telephone: false },
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    siteName: 'Acme',
+    title: 'Acme — Project Management',
+    description: 'Acme helps teams ship faster with modular project management.',
+    url: '/',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Acme — Project Management',
+    description: 'Acme helps teams ship faster with modular project management.',
+  },
+  robots: { index: true, follow: true },
+  icons: { icon: '/favicon.ico', apple: '/apple-touch-icon.png' },
+  manifest: '/manifest.json',
+};
+```
+
+**Metadata merging**: Child routes export `metadata.title` → template applied (`'%s | Acme'`). Child routes that DON'T export `openGraph` inherit root. Child routes that DO export `openGraph` **replace** entirely.
+
+## Static vs Dynamic Metadata
+
+### Static — `metadata` object
+
+Use when metadata is known at build time. Always prefer this.
+
+```tsx
+// app/about/page.tsx
+import type { Metadata } from 'next';
+
+export const metadata: Metadata = {
+  title: 'About Us',
+  description: 'Learn about the Acme team.',
+  alternates: { canonical: '/about' },
+};
+```
+
+### Dynamic — `generateMetadata`
+
+Use when metadata depends on route params or fetched data. `params` is `Promise<>` in Next.js 16.
+
+```tsx
+// app/projects/[id]/page.tsx
+import type { Metadata, ResolvingMetadata } from 'next';
+
+type Props = { params: Promise<{ id: string }> };
+
+export async function generateMetadata(
+  { params }: Props,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
+  const { id } = await params;
+  const project = await fetch(`${env.API_BASE_URL}/projects/${id}`).then(r => r.json());
+  const previousImages = (await parent).openGraph?.images ?? [];
+
+  return {
+    title: project.name,
+    description: project.summary,
+    alternates: { canonical: `/projects/${id}` },
+    openGraph: {
+      title: project.name,
+      description: project.summary,
+      images: [project.coverImage, ...previousImages],
+    },
+  };
+}
+```
+
+## Canonical URLs
+
+Every page exports `alternates.canonical`. Prevents duplicate content penalties.
+
+## `robots.ts` — Programmatic Rules
+
+```ts
+// app/robots.ts
+import type { MetadataRoute } from 'next';
+import { env } from '@/env';
+
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: { userAgent: '*', allow: '/', disallow: ['/api/', '/_next/'] },
+    sitemap: `${env.NEXT_PUBLIC_API_BASE_URL}/sitemap.xml`,
+  };
+}
+```
+
+## `sitemap.ts` — Programmatic Generation
+
+```ts
+// app/sitemap.ts
+import type { MetadataRoute } from 'next';
+import { env } from '@/env';
+
+export default function sitemap(): MetadataRoute.Sitemap {
+  const baseUrl = env.NEXT_PUBLIC_API_BASE_URL;
+  return [
+    { url: baseUrl, lastModified: new Date(), changeFrequency: 'yearly', priority: 1 },
+    { url: `${baseUrl}/about`, lastModified: new Date(), changeFrequency: 'monthly', priority: 0.8 },
+  ];
+}
+```
+
+## JSON-LD — Structured Data
+
+For rich snippets, add JSON-LD components in `app/` — not inside modules. Structured data is a route concern.
+
+```tsx
+// app/projects/[id]/json-ld.tsx
+export function JsonLd() {
+  const data = {
+    '@context': 'https://schema.org',
+    '@type': 'WebApplication',
+    name: 'Acme',
+    description: 'Project management for teams',
+    applicationCategory: 'ProjectManagementApplication',
+  };
+
+  return (
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />
+  );
+}
+```
+
+## SEO Rules
+
+| Rule | Why |
+|------|-----|
+| `metadataBase` in root layout | All relative paths resolve to full URLs automatically |
+| Title template in root layout | Consistent branding — `Page Title \| Acme` everywhere |
+| Always export `alternates.canonical` per page | Prevents duplicate content from query params / trailing slashes |
+| `robots.ts` disallows `/api/`, `/_next/` | Internal paths pollute search results |
+| `sitemap.ts` returns `MetadataRoute.Sitemap` | Type-safe, cached by default, auto-format XML |
+| JSON-LD in `app/` not in modules | Structured data describes the route, not the component |
+| `viewport` is separate export, not in metadata | Next.js 14+ requirement — deprecated inside metadata |
+| Static `metadata` over `generateMetadata` when possible | Zero runtime cost |
+| `params` is `Promise<>` in Next.js 16 | Must `await` inside `generateMetadata` |
+
+---
+
+# Internationalization — `next-intl`
+
+## Why `next-intl`
+
+Client-first app still needs content translation. `next-intl` handles locale routing, ICU message syntax, and per-module translation JSON. Translations load async server-side in layouts, passed to client components via `NextIntlClientProvider`.
+
+```bash
+bun add next-intl
+```
+
+## Architecture: Server-Driven Messages
+
+1. Root `layout.tsx` (Server Component) resolves locale + loads messages
+2. Wraps children in `NextIntlClientProvider` with loaded messages
+3. Client components call `useTranslations()` — sync, reads from context
+
+No per-page `getTranslations`. No prop drilling. One provider, all components consume.
+
+## File Structure
+
+```
+messages/
+  en/
+    common.json             # Shared: buttons, nav, errors, dates
+    auth.json               # Auth module translations
+    dashboard.json          # Dashboard module translations
+  fr/
+    common.json
+    auth.json
+    dashboard.json
+```
+
+**Per-module JSON files**, folder per locale. Developer opens `messages/en/auth.json` to edit auth strings — no scrolling through unrelated keys.
+
+## Setup
+
+### `src/i18n/routing.ts`
+
+```ts
+// src/i18n/routing.ts
+import { defineRouting } from 'next-intl/routing';
+
+export const routing = defineRouting({
+  locales: ['en', 'fr', 'es'],
+  defaultLocale: 'en',
+  localePrefix: 'as-needed', // '/' for default locale, '/fr/' for others
+});
+```
+
+### `proxy.ts` (Next.js 16)
+
+```ts
+// proxy.ts
+import createIntlProxy from 'next-intl/proxy';
+import { routing } from '@/i18n/routing';
+
+export default createIntlProxy(routing);
+
+export const config = {
+  matcher: ['/((?!api|_next|_vercel|.*\\..*).*)'],
+};
+```
+
+### `src/i18n/request.ts`
+
+```ts
+// src/i18n/request.ts
+import { getRequestConfig } from 'next-intl/server';
+import { routing } from './routing';
+
+export default getRequestConfig(async ({ requestLocale }) => {
+  let locale = await requestLocale;
+  if (!locale || !routing.locales.includes(locale as (typeof routing.locales)[number])) {
+    locale = routing.defaultLocale;
+  }
+
+  return {
+    locale,
+    messages: {
+      common: (await import(`../../messages/${locale}/common.json`)).default,
+      auth: (await import(`../../messages/${locale}/auth.json`)).default,
+      dashboard: (await import(`../../messages/${locale}/dashboard.json`)).default,
+    },
+  };
+});
+```
+
+## Translation Messages — Key Naming
+
+### Key Structure: Page → Component → Key
+
+```json
+// messages/en/auth.json
+{
+  "LoginPage": {
+    "title": "Sign In",
+    "description": "Sign in to access your account",
+    "LoginForm": {
+      "emailLabel": "Email",
+      "emailPlaceholder": "Email address",
+      "passwordLabel": "Password",
+      "passwordPlaceholder": "Password",
+      "submitButton": "Sign In",
+      "loadingButton": "Signing in...",
+      "forgotPassword": "Forgot password?",
+      "errors": {
+        "invalidCredentials": "Invalid email or password",
+        "networkError": "Connection failed. Try again."
+      }
+    }
+  }
+}
+```
+
+**Rule**: Keys mirror the component tree. `auth.LoginPage.LoginForm.submitButton` maps to `src/modules/auth/ui/login-form.tsx`. Missing key → instant file + path to fix.
+
+### Shared/Common Keys
+
+```json
+// messages/en/common.json
+{
+  "buttons": { "cancel": "Cancel", "save": "Save", "delete": "Delete", "confirm": "Confirm" },
+  "errors": { "required": "This field is required", "generic": "Something went wrong." },
+  "navigation": { "dashboard": "Dashboard", "settings": "Settings", "profile": "Profile", "signOut": "Sign Out" }
+}
+```
+
+Only truly shared UI strings. Module-specific strings stay in module files.
+
+## ICU Message Syntax
+
+### Interpolation
+
+```json
+{ "greeting": "Hello, {name}!", "itemCount": "{count} items" }
+```
+
+### Pluralization
+
+```json
+{ "followers": "{count, plural, =0 {No followers} =1 {One follower} other {# followers}}" }
+```
+
+### Select (Gender/Conditional)
+
+```json
+{ "greeting": "{gender, select, male {Welcome, sir} female {Welcome, ma'am} other {Welcome}}" }
+```
+
+### Rich Text
+
+```json
+{ "tos": "I accept the <link>terms of service</link>" }
+```
+
+```tsx
+t.rich('tos', {
+  link: (chunks) => <a href="/terms" className="underline">{chunks}</a>,
+});
+```
+
+## Usage in Client Components
+
+```tsx
+// src/modules/auth/ui/login-form.tsx
+'use client';
+import { useTranslations } from 'next-intl';
+
+export function LoginForm() {
+  const te = useTranslations('common.errors');
+  const t = useTranslations('auth.LoginPage.LoginForm');
+  // ...
+  return <input placeholder={t('emailPlaceholder')} />;
+}
+```
+
+## Default Language: JSON as Source of Truth
+
+English (`en`) JSON files are the **source of truth** for keys. Other locales mirror the key structure. Missing key → fallback to English automatically.
+
+```
+messages/en/auth.json → add new key (dev writes)
+messages/fr/auth.json → copy structure, translate values (translator writes)
+```
+
+**Dev never touches non-English files.** Translation is a separate concern.
+
+## i18n Rules
+
+| Rule | Why |
+|------|-----|
+| Per-module JSON files (`auth.json`, `dashboard.json`) | Dev opens one file per module — no scrolling |
+| Keys mirror component tree | Missing key → immediate file + path to fix |
+| `localePrefix: 'as-needed'` | Clean URLs. Default locale has no prefix. |
+| `proxy.ts` handles locale detection | Path → cookie → `accept-language` header → fallback |
+| `NextIntlClientProvider` in root layout | Client components read translations from context |
+| `useTranslations('namespace.Page.Component')` | Scoped to component. No accidental reuse. |
+| English JSON = source of truth | Dev writes English. Translators fill other locales. |
+| Non-English files never edited by dev | Keys auto-fallback to English. |
+| `next-intl/plugin` wraps `next.config.ts` | Required for build-time i18n config injection |
+| `useTranslations` stays out of DI | Reads React context, not a service — DI adds indirection |
+
+---
+
+# Naming Conventions
 
 | Thing | Convention | Example |
 |-------|-----------|---------|
@@ -2000,11 +2666,14 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 | Error type file | `errors.ts` | `errors.ts` |
 | Error interface | PascalCase + `Error` | `ApiError` |
 | Service file | `${name}.service.ts` | `auth.service.ts` |
-| Ports file | `ports.ts` | `ports.ts` |
 | Repository file | `${name}.repository.ts` | `auth.repository.ts` |
 | Repository class | PascalCase + `Repository` | `AuthRepository` |
 | DI tokens file | `tokens.ts` | `tokens.ts` |
 | DI container file | `container.ts` | `container.ts` |
+| Store file | `${name}.store.ts` | `auth.store.ts` |
+| Store hook | `useXxxStore` | `useAuthStore` |
+| Query hook file | `use-${name}.ts` | `use-order-list.ts` |
+| Query hook function | `useXxx` | `useOrderList` |
 | UI component file | PascalCase `.tsx` | `LoginForm.tsx` |
 | Page component | PascalCase `-page.tsx` | `login-page.tsx` |
 | Barrel file | `index.ts` | `index.ts` |
@@ -2018,9 +2687,9 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 - **Route registration** — lives in `app/`. Modules export page components, app composes them.
 - **Root layout** — lives in `app/layout.tsx`. Modules export UI pieces layouts can use.
 - **Global styles** — lives in `app/globals.css` or shared design tokens.
-- **Config** — lives in `next.config.ts`, `postcss.config.mjs`, `.env`. Modules read typed config from DI.
-- **Raw `fetch` calls** — repositories only. Even then, use the shared `apiClient`. No bare network calls anywhere else.
-- **Domain entities or value objects** — frontend only needs request validation (Zod) and response types (plain interfaces). The backend owns the domain model.
+- **Config** — lives in `next.config.ts`, `postcss.config.mjs`, `src/env.ts`. Env vars validated by T3 Env.
+- **Raw `fetch` calls** — repositories only. Even then, use the shared `apiClient`. No bare network calls.
+- **Domain entities or value objects** — frontend needs request validation (Zod) + response types (interfaces). Backend owns the domain model.
 
 ---
 
@@ -2032,18 +2701,26 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 | Module = business capability under `modules/` | Not a technical layer. Extract by capability. |
 | `schemas/` depends on nothing | Pure Zod. No React, no Next.js, no HTTP. |
 | `types/` depends on nothing | Pure TypeScript interfaces. No React, no Next.js, no HTTP. |
-| `application/` depends only on `types/` and `schemas/` | Thin orchestration. Receives repositories via constructor DI. |
-| `repositories/` = data fetching | Axios calls to external backend. One repo per resource. |
-| `ui/` depends on `application/` and `schemas/` | Validates with Zod, resolves services via `useResolve`. |
+| `stores/` depends on `application/`, `types/` | Factory receives services. Holds client state. |
+| `hooks/` depends on `application/`, `types/` | Wraps TanStack Query for components. |
+| `application/` depends on `types/`, `schemas/`, `repositories/` | Thin orchestration. Injects `ILogger`. |
+| `repositories/` = data fetching | Axios calls to external backend. One repo per resource. Injects `ILogger`. |
+| `ui/` depends on `stores/`, `hooks/`, `schemas/` | Uses store actions/selectors, query hooks, FormField. |
 | `di/` wires everything | Only place that knows concrete classes. |
 | `index.ts` = public API barrel | Re-exports only what other modules may use. |
 | All components are `'use client'` | Client-first. No server data fetching. |
 | `apiClient` (axios) is the only HTTP surface | Repositories wrap it. No raw `axios`/`fetch` anywhere else. |
+| `ILogger` is the only logging surface | Modules depend on interface. PinoLogger is DI-wired. |
 | Child containers per module | Isolate registrations. Prevent circular resolution. |
 | Token naming: `module.Type` | Grep-friendly. No magic strings. |
 | Pages are one-liners | `export default ModulePage` — nothing more. |
-| Never import another module's `repositories/` | Bypasses contracts. Use barrel + DI tokens. |
-| Zod validates at the form boundary | `ui/` validates before `application/` — backend owns business rules. |
+| Never import another module's `repositories/` | Use barrel + DI tokens. |
+| Zod validates ALL rules at once | No `.abortEarly`. User sees every error on first submit. |
+| FormField shows ALL errors per field | Bullet list. Destructive border on input. |
+| Zod validates at the form boundary | `ui/` validates before `stores/` — backend owns business rules. |
+| `proxy.ts` handles locale routing | next-intl `createIntlProxy`. Replaces `middleware.ts`. |
+| Security headers in `next.config.ts` | Set once. HSTS production-only. |
+| Env vars via `@t3-oss/env-nextjs` | Typed. Validated at build + runtime. No raw `process.env`. |
 
 ---
 
@@ -2052,7 +2729,7 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 | Anti-pattern | Correct |
 |-------------|---------|
 | Business logic in `app/page.tsx` | Page re-exports module's page component |
-| `axios`/`fetch` directly in a component | Service → Repository → `apiClient` |
+| `axios`/`fetch` directly in a component | Store → Service → Repository → `apiClient` |
 | `axios`/`fetch` directly in a service | Inject the repository, call its methods |
 | Module importing sibling's `repositories/` | Use barrel `index.ts` + DI token |
 | Single global tsyringe container | Per-module child containers |
@@ -2063,6 +2740,11 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 | `domain/` with entities, VOs, domain errors | Frontend needs Zod schemas (requests) + interfaces (responses) |
 | Untyped form submissions | Validate with TanStack Form + Zod adapter |
 | `IUser` or `TUser` prefixes on types | Plain interfaces: `UserDto`, `LoginResponse` |
+| Strings in JSX | Use `useTranslations('module.Page.Component')` |
+| Raw `process.env` | Import `env` from `@/env` |
+| `console.log` in services/repos | Inject `ILogger`, call `this.log.info({...}, msg)` |
+| Stores in `ui/stores/` | `stores/` at module root — own layer |
+| Hooks in `ui/hooks/` | `hooks/` at module root — own adapter layer |
 
 ---
 
@@ -2071,13 +2753,21 @@ Follows the `typescript-react-naming-conventions` skill. Module-specific additio
 When building Next.js 16 with modular client-first architecture:
 
 1. Every new feature starts as a module — `src/modules/<name>/`.
-2. Every module has `schemas/`, `types/`, `application/`, `repositories/`, `ui/`, `di/` — skip only if a layer is genuinely empty.
+2. Every module has `schemas/`, `types/`, `stores/`, `application/`, `repositories/`, `ui/`, `di/` — skip only if a layer is genuinely empty.
 3. Every component is `'use client'`. No server-side data fetching.
-4. Every page in `app/` is one line: `export default ModulePage;`.
+4. Every page in `app/` is one line + metadata: `export const metadata = {...}; export default ModulePage;`.
 5. Every API call goes through a repository — never raw `axios`/`fetch`.
 6. Every Client Component resolves services via `useResolve(token)` — never `new Service()` directly.
 7. Every DI registration uses Symbol tokens: `Symbol.for('module.Type')`.
-8. Every repository is a plain class injecting `AxiosInstance` — no custom wrapper, no `Result<T>`.
-9. Every form validates with Zod before calling the service — `schema.safeParse()` at the UI boundary.
-10. Every type from the API is a plain interface with `Dto` or `Response` suffix — no entities, no value objects, no domain classes.
-11. When in doubt, apply the extraction test: "Can I move this module to a separate package without rewriting its business logic?"
+8. Every repository is a plain class injecting `AxiosInstance` + `ILogger`.
+9. Every service injects `ILogger` via `SHARED_TOKENS.Logger`, creates child with `{ module, layer }`.
+10. Every log call passes structured object as first argument: `log.info({ userId }, 'msg')`.
+11. Every form validates with Zod before calling the service — schema passed to TanStack Form's `validators.onSubmit`.
+12. Every form field uses `FormField` component — renders ALL errors, not just first.
+13. Zod validates ALL rules at once — no `.abortEarly`. User sees every failure on first submit.
+14. Every type from the API is a plain interface with `Dto` or `Response` suffix — no entities, no value objects.
+15. Every user-facing string uses `useTranslations('module.Page.Component')` — keys mirror component tree.
+16. Every public page exports canonical URL via `alternates.canonical`.
+17. Every env variable is validated by T3 Env — no raw `process.env`.
+18. Security headers are set once in `next.config.ts` — HSTS production-only.
+19. When in doubt, apply the extraction test: "Can I move this module to a separate package without rewriting its business logic?"
