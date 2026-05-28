@@ -34,7 +34,7 @@ Browser
 This means:
 - No Server Components for data fetching. Pages are client-rendered shells.
 - No `"use cache"`, no `cacheTag`, no `revalidateTag` — caching is the backend's job.
-- No `cookies()`, `headers()` rewrites to hide backend URLs — the API base URL is config. `proxy.ts` is reserved for i18n locale routing only.
+- No `cookies()`, `headers()` rewrites to hide backend URLs — the API base URL is config. `src/proxy.ts` handles locale + auth guard routing.
 - tsyringe DI is the universal pattern — every component resolves its dependencies.
 - `infrastructure/` = API clients. No ORM, no DB driver, no `revalidateTag`.
 - No "domain entities" or "value objects" — frontend only needs Zod request schemas and API response types.
@@ -46,7 +46,6 @@ This means:
 
 ```
 project-root/
-├── proxy.ts                         # next-intl locale routing (Next.js 16)
 ├── next.config.ts                   # Security headers, reactCompiler, next-intl plugin
 ├── postcss.config.mjs               # Tailwind v4 PostCSS plugin
 ├── tsconfig.json                    # experimentalDecorators, emitDecoratorMetadata
@@ -115,12 +114,8 @@ project-root/
         │   ├── stores/              # Shared Zustand stores
         │   │   ├── notification.store.ts
         │   │   └── theme.store.ts
-        │   ├── ui/
-        │   │   ├── form-field.tsx   # FormField — TanStack Form + shadcn styled input
-        │   │   └── field-error.tsx  # FieldError — renders ALL errors
-        │   ├── utils/
-        │   │   ├── cn.ts           # clsx wrapper
-        │   │   └── format-date.ts
+        │   └── utils/
+        │       └── format-date.ts
         │   └── index.ts            # Barrel
         │
         ├── auth/                    # Auth module
@@ -380,7 +375,7 @@ export default createNextIntlPlugin()(nextConfig);
 CSP is **not** set globally via `headers()` for a client-first app. Why:
 - Inline scripts/styles from Next.js's dev bundler conflict with strict `script-src` / `style-src`.
 - CSP is easier to iterate on via a `Content-Security-Policy-Report-Only` header in development.
-- `proxy.ts` is already occupied by i18n locale routing (`next-intl`). If CSP with nonces is needed, add a second proxy or set `Content-Security-Policy` via `headers()` in `next.config.ts` with `Report-Only` mode first.
+- `src/proxy.ts` handles locale + auth routing. If CSP with nonces is needed, set `Content-Security-Policy` via `headers()` in `next.config.ts` with `Report-Only` mode first.
 
 ### Standalone Output (Docker)
 
@@ -761,11 +756,11 @@ src/modules/auth/ui/
 
 import { useForm } from '@tanstack/react-form';
 import { zodValidator } from '@tanstack/zod-form-adapter';
-import { useResolve } from '@/app/_lib/di/use-resolve';
+import { useResolve } from '@/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { loginSchema } from '../schemas/login.schema';
-import { FormField } from '@/modules/shared/ui/form-field';
+import { FormField } from '@/components/common/FormField';
 import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 
@@ -852,11 +847,11 @@ export function LoginForm() {
 
 import { useForm } from '@tanstack/react-form';
 import { zodValidator } from '@tanstack/zod-form-adapter';
-import { useResolve } from '@/app/_lib/di/use-resolve';
+import { useResolve } from '@/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { registerSchema } from '../schemas/register.schema';
-import { FormField } from '@/modules/shared/ui/form-field';
+import { FormField } from '@/components/common/FormField';
 import { useTranslations } from 'next-intl';
 import { useState } from 'react';
 
@@ -958,7 +953,7 @@ export const AUTH_TOKENS = {
 
 ```ts
 // src/modules/auth/di/container.ts
-import { container as rootContainer } from '@/app/_lib/di/container';
+import { container as rootContainer } from '@/lib/di/container';
 import { AUTH_TOKENS } from './tokens';
 import { AuthServiceImpl } from '../application/auth.service';
 import { AuthRepository } from '../repositories/auth.repository';
@@ -1162,7 +1157,7 @@ bun add zustand
 TanStack Query needs a `QueryClientProvider` wrapping the app. Configure default options — no retry on mutations, no auto-refetch on window focus for mutations.
 
 ```tsx
-// app/_lib/query/provider.tsx
+// src/app/_lib/query/provider.tsx
 'use client';
 
 import { QueryClient, QueryClientProvider, type QueryClientConfig } from '@tanstack/react-query';
@@ -1211,22 +1206,12 @@ export function QueryProvider({ children }: QueryProviderProps) {
 }
 ```
 
-Import `reflect-metadata` once in the DI container file:
-
-```ts
-// app/_lib/di/container.ts
-import 'reflect-metadata';
-import { container } from 'tsyringe';
-
-export { container };
-```
-
 ## `useResolve` Hook
 
 The single entry point for components to get services.
 
 ```ts
-// app/_lib/di/use-resolve.ts
+// src/hooks/use-resolve.ts
 'use client';
 
 import { useMemo } from 'react';
@@ -1243,10 +1228,25 @@ export function useResolve<T>(token: InjectionToken<T>): T {
 
 **Token stability**: Token must be stable across renders — Symbol, class reference. Never create tokens inline in render.
 
+## DI Setup
+
+Module `di/container.ts` files import the root container directly from `@/lib/di/container`:
+
+```ts
+// src/modules/auth/di/container.ts
+import { container } from '@/lib/di/container';
+import { AUTH_TOKENS } from './tokens';
+import { AuthService } from '../application/auth.service';
+
+export function initializeAuthModule(): void {
+  container.register(AUTH_TOKENS.AuthService, { useClass: AuthService });
+}
+```
+
 ## `DIProvider` — Module Initialization
 
 ```tsx
-// app/_lib/di/provider.tsx
+// src/app/_lib/di/provider.tsx
 'use client';
 
 import { useEffect, type ReactNode } from 'react';
@@ -1291,6 +1291,7 @@ export function initializeAllModules(): void {
 import { NextIntlClientProvider } from 'next-intl';
 import { QueryProvider } from '@/app/_lib/query/provider';
 import { DIProvider } from '@/app/_lib/di/provider';
+import { useResolve } from '@/hooks/use-resolve';
 import type { LayoutProps } from '@/app/[locale]/layout';
 
 export default async function RootLayout({
@@ -1451,7 +1452,7 @@ export const rootLogger: ILogger = new PinoLogger(rootPino);
 
 ```ts
 // src/modules/shared/di/container.ts
-import { container as rootContainer } from '@/app/_lib/di/container';
+import { container as rootContainer } from '@/lib/di/container';
 import { env } from '@/env';
 import axios from 'axios';
 import { SHARED_TOKENS } from './tokens';
@@ -1592,10 +1593,10 @@ Form fields use reusable components, not raw input JSX. `FieldError` renders ALL
 ### `FieldError`
 
 ```tsx
-// src/modules/shared/ui/field-error.tsx
+// src/components/common/FieldError.tsx
 'use client';
 
-import { cn } from '@/modules/shared/utils/cn';
+import { cn } from '@/lib/utils';
 
 interface FieldErrorProps {
   errors: unknown[] | undefined;
@@ -1632,11 +1633,11 @@ export function FieldError({ errors, className }: FieldErrorProps) {
 ### `FormField`
 
 ```tsx
-// src/modules/shared/ui/form-field.tsx
+// src/components/common/FormField.tsx
 'use client';
 
 import type { ReactNode } from 'react';
-import { cn } from '@/modules/shared/utils/cn';
+import { cn } from '@/lib/utils';
 import { FieldError } from './field-error';
 
 interface FormFieldProps {
@@ -1728,8 +1729,8 @@ export function FormField({
 - `PaginationParams`, `PaginationMetadata`, `PaginatedResponse<T>` types
 - `useResolve` hook
 - DI infrastructure (root container)
-- `FormField` + `FieldError` — reusable form field components
-- Utility functions (`cn`, `formatDate`, etc.)
+- Form UI components in `@/components/common/` (FormField, FieldError)
+- Utility functions (`formatDate`, etc.)
 - Reusable hooks (`useDebounce`, `useMediaQuery`)
 
 ## What Does NOT Belong in Shared
@@ -2009,7 +2010,7 @@ Components resolve the store hook via `useResolve`, then use it like any Zustand
 
 ```tsx
 'use client';
-import { useResolve } from '@/app/_lib/di/use-resolve';
+import { useResolve } from '@/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthStore } from '../stores/auth.store';
 
@@ -2122,7 +2123,7 @@ src/modules/orders/
 ```ts
 // src/modules/orders/hooks/use-order-list.ts
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { useResolve } from '@/app/_lib/di/use-resolve';
+import { useResolve } from '@/hooks/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
 import type { OrderService } from '../../application/order.service';
 import type { OrderFilters } from '../../types/filters';
@@ -2157,7 +2158,7 @@ export function useOrderList({ filters, pageSize = 20 }: UseOrderListOptions) {
 ```ts
 // src/modules/orders/hooks/use-create-order.ts
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useResolve } from '@/app/_lib/di/use-resolve';
+import { useResolve } from '@/hooks/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
 import type { OrderService } from '../../application/order.service';
 import type { CreateOrderRequest } from '../../schemas/create-order.schema';
@@ -2241,20 +2242,7 @@ export default config;
 | `disabled:` state on every button/input | `disabled:opacity-50 disabled:cursor-not-allowed`. |
 | Tailwind v4: `@import 'tailwindcss'` | Replaces v3 `@tailwind base/components/utilities` directives. |
 
-## `cn` Helper
-
-```ts
-// src/modules/shared/utils/cn.ts
-import { clsx, type ClassValue } from 'clsx';
-
-export function cn(...inputs: ClassValue[]): string {
-  return clsx(inputs);
-}
-```
-
-```bash
-bun add clsx
-```
+You should use the existing `cn` utility at `@/lib/utils` (`cn` is implemented using `clsx`).
 
 ---
 
@@ -2498,17 +2486,22 @@ export const routing = defineRouting({
 });
 ```
 
-### `proxy.ts` (Next.js 16)
+### `proxy.ts` (Next.js 16 — at `src/proxy.ts`)
 
 ```ts
-// proxy.ts
-import createIntlProxy from 'next-intl/proxy';
-import { routing } from '@/i18n/routing';
+// src/proxy.ts
+import type { NextRequest } from 'next/server';
+import { intlMiddleware, handleAuthGuard } from '@/middleware';
 
-export default createIntlProxy(routing);
+export default function proxy(request: NextRequest) {
+  const authResponse = handleAuthGuard(request);
+  if (authResponse) return authResponse;
+
+  return intlMiddleware(request);
+}
 
 export const config = {
-  matcher: ['/((?!api|_next|_vercel|.*\\..*).*)'],
+  matcher: ['/((?!api|_next/static|_next/image|assets|favicon.ico|.*\\..*).*)'],
 };
 ```
 
@@ -2643,7 +2636,7 @@ messages/fr/auth.json → copy structure, translate values (translator writes)
 | Per-module JSON files (`auth.json`, `dashboard.json`) | Dev opens one file per module — no scrolling |
 | Keys mirror component tree | Missing key → immediate file + path to fix |
 | `localePrefix: 'as-needed'` | Clean URLs. Default locale has no prefix. |
-| `proxy.ts` handles locale detection | Path → cookie → `accept-language` header → fallback |
+| `src/proxy.ts` handles locale + auth | Composes intl middleware + auth guard |
 | `NextIntlClientProvider` in root layout | Client components read translations from context |
 | `useTranslations('namespace.Page.Component')` | Scoped to component. No accidental reuse. |
 | English JSON = source of truth | Dev writes English. Translators fill other locales. |
@@ -2720,7 +2713,7 @@ messages/fr/auth.json → copy structure, translate values (translator writes)
 | Zod validates ALL rules at once | No `.abortEarly`. User sees every error on first submit. |
 | FormField shows ALL errors per field | Bullet list. Destructive border on input. |
 | Zod validates at the form boundary | `ui/` validates before `stores/` — backend owns business rules. |
-| `proxy.ts` handles locale routing | next-intl `createIntlProxy`. Replaces `middleware.ts`. |
+| `src/proxy.ts` handles locale + auth | Composes intl middleware + auth guard |
 | Security headers in `next.config.ts` | Set once. HSTS production-only. |
 | Env vars via `@t3-oss/env-nextjs` | Typed. Validated at build + runtime. No raw `process.env`. |
 
