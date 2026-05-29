@@ -39,7 +39,7 @@ C# uses explicit access modifiers. No capitalization-trick.
 - **PascalCase** — `MyCompany.OrderManagement`, `MyCompany.UserService`.
 - Assembly name matches the namespace root: `OrderManagement.dll` → `namespace OrderManagement`.
 - **No** `Util`, `Common`, `Misc`, `Helpers`, `Base`, `Core` — meaningless name magnets.
-- **No** `Shared` namespace at the root — use a real domain: `SharedKernel` or `Common.Infrastructure`.
+- **`SharedKernel`** is the cross-cutting namespace at the root — Result, ApiResponse, DI extensions.
 
 ## Files
 
