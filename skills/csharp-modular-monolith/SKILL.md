@@ -496,11 +496,11 @@ Client Request
 
 ## Principle
 
-A simple `Result<T>` encodes success or failure in one type without exceptions for expected errors. Success wraps an `Outcome<T>` record with a status code. Failure wraps a `Failure` record with an HTTP status, title, and detail.
+A two-tier result system: pure core types in `Shared/Results/` (usable outside ASP.NET) and HTTP extension types in `Shared/Extensions/Http/` (add status codes, pagination, verb methods).
 
-**No union types.** No OneOf. No third-party libraries. Three lightweight types.
+**No union types.** No OneOf. No third-party libraries.
 
-## Types — `Shared/Results/`
+## Core Types — `Shared/Results/` (Zero ASP.NET Dependency)
 
 ### `Result<T>` — Discriminated Union
 
@@ -525,96 +525,110 @@ public readonly record struct Result<T>
 }
 ```
 
-### `Outcome<T>` — Success Value + Status Code
+### `Outcome<T>` — Pure Success Value
 
 ```csharp
 namespace api.Shared.Results;
 
-public sealed record Outcome<T>(T Value, int StatusCode = 200)
-{
-    public static Outcome<T> Created(T value) => new(value, 201);
-    public static Outcome<T> Accepted(T value) => new(value, 202);
-}
+public record Outcome<T>(T Value);
 ```
 
-### `Outcome` — Static Factory
+### `Failure` — Pure Failure Message
 
 ```csharp
 namespace api.Shared.Results;
 
-public static class Outcome
+public record Failure(string Message)
 {
-    public static Result<T> Success<T>(T value) => new Outcome<T>(value);
-    public static Result<T> Created<T>(T value) => Outcome<T>.Created(value);
-    public static Result<T> Accepted<T>(T value) => Outcome<T>.Accepted(value);
-    public static Result<T> Failed<T>(Failure failure) => failure;
-}
-```
-
-### `Failure` — Standardized Error Record
-
-```csharp
-namespace api.Shared.Results;
-
-public sealed record Failure(int StatusCode, string Title, string Detail)
-{
-    public static Failure NotFound(string detail) =>
-        new(404, "Not Found", detail);
-    public static Failure Conflict(string detail) =>
-        new(409, "Conflict", detail);
-    public static Failure BadRequest(string detail) =>
-        new(400, "Bad Request", detail);
-    public static Failure ValidationError(string detail, object? errors = null)
-        => new(422, "Validation Failed", detail) { Errors = errors };
-    public static Failure Internal(string detail = "An unexpected server error occurred.") =>
-        new(500, "Internal Server Error", detail);
-    public static Failure Unauthorized(string detail = "Authentication is required.") =>
-        new(401, "Unauthorized", detail);
-    public static Failure Forbidden(string detail = "You do not have permission.") =>
-        new(403, "Forbidden", detail);
-
+    public virtual int StatusCode => 400;
     public object? Errors { get; init; }
 }
 ```
 
-## Usage in Services
+### `Result` — Static Factory
 
 ```csharp
-// Success — explicit (recommended)
-return Outcome.Success(items);         // 200 OK
-return Outcome.Created(dto);           // 201 Created
-return Outcome.Accepted(dto);          // 202 Accepted
-
-// Failure — via static factories
-return Outcome.Failed(Failure.NotFound("Order not found"));
-return Outcome.Failed(Failure.Conflict("Already cancelled"));
-return Outcome.Failed(Failure.Internal());
+public static class Result
+{
+    public static Result<T> Success<T>(T value) => new Outcome<T>(value);
+    public static Result<T> Failed<T>(Failure failure) => failure;
+}
 ```
 
-No per-module error classes needed — `Failure.NotFound()`, `Failure.Conflict()`, `Failure.Internal()` cover all cases.
+## HTTP Extensions — `Shared/Extensions/Http/` (ASP.NET-Aware)
 
-## Mapping to HTTP in Endpoints
+### `HttpOutcome<T>` — Adds Status Code + Pagination
 
 ```csharp
-var result = await service.GetAllAsync(ct);
-return result.ToResult();  // single call — delegates to Outcome or Failure path
+namespace api.Shared.Extensions.Http;
+
+public sealed record HttpOutcome<T>(T Value, int StatusCode = 200) : Outcome<T>(Value)
+{
+    public PageInfo? Pagination { get; init; }
+}
 ```
 
-The `ToResult()` extension handles both paths:
-- `Outcome<T>` → `ResponseResult` → `ApiResponse.ForSuccess(code, data)`
-- `Failure` → `ResponseResult` → `ApiResponse.ForFailure(failure)`
+### `HttpFailure` — Status Code + Static Factories
 
-`ResponseResult` is a custom `IResult` that stamps `TraceId` on failures and serializes as JSON.
+```csharp
+namespace api.Shared.Extensions.Http;
 
-### Rules
+public sealed record HttpFailure(int StatusCode, string Message) : Failure(Message)
+{
+    public static HttpFailure NotFound(string detail) => new(404, detail);
+    public static HttpFailure BadRequest(string detail) => new(400, detail);
+    public static HttpFailure Conflict(string detail) => new(409, detail);
+    public static HttpFailure Internal(string detail = "An unexpected server error occurred.") => new(500, detail);
+}
+```
 
-| Rule | Why |
-|------|-----|
-| `Result<T>` for all service methods that can fail | No exceptions for expected paths |
-| `Outcome.Success()` / `Outcome.Created()` explicit factories | Clear intent, no magic |
-| `Failure` static factories instead of module error classes | Single source of truth, no duplication |
-| `Failure.Internal()` always returns generic 500 | Never leaks exception details to client |
-| `result.ToResult()` in endpoints | One call, both paths handled |
+### `OutcomeHttpExtensions` — Verb Methods on `Outcome<T>`
+
+```csharp
+namespace api.Shared.Extensions.Http;
+
+public static class OutcomeHttpExtensions
+{
+    public static HttpOutcome<T> Created<T>(this Outcome<T> outcome) => new(outcome.Value, 201);
+    public static HttpOutcome<T> Accepted<T>(this Outcome<T> outcome) => new(outcome.Value, 202);
+    public static HttpOutcome<T> NoContent<T>(this Outcome<T> outcome) => new(outcome.Value, 204);
+    public static HttpOutcome<T> Paginated<T>(this Outcome<T> outcome, PageInfo pagination)
+        => new(outcome.Value) { Pagination = pagination };
+}
+```
+
+## Usage in Services (Pure Domain)
+
+```csharp
+return Result.Success(items);
+return Result.Failed(new Failure("Something broke"));
+return Result.Failed(HttpFailure.NotFound("Order not found"));
+```
+
+Services never import `HttpOutcome` or verb extensions — those are endpoint concerns.
+
+## Usage in Endpoints (HTTP Layer)
+
+```csharp
+// Default 200 — auto-detects HttpOutcome<T> via is-check
+return result.ToResult();
+
+// Custom verb
+result.Match(
+    onSuccess: outcome => outcome.Created().ToResult(),
+    onFailure: failure => failure.ToError());
+
+// Paginated
+result.Match(
+    onSuccess: outcome => outcome.Paginated(pageInfo).ToResult(),
+    onFailure: failure => failure.ToError());
+```
+
+`ToResult()` on `Outcome<T>` uses pattern matching:
+- `is HttpOutcome<T> http` → reads `http.StatusCode` + `http.Pagination`
+- plain `Outcome<T>` → defaults to 200
+
+`ToError()` on `Failure` reads `failure.StatusCode` via virtual dispatch — `HttpFailure` overrides with the correct status (404, 400, 500, etc.).
 
 ---
 
@@ -995,7 +1009,6 @@ internal sealed class ResponseResult : IResult
 ```
 
 Plain `Outcome<T>` → 200. `HttpOutcome<T>` → reads `StatusCode` + `Pagination`. `Failure` → reads `StatusCode` via virtual dispatch (`HttpFailure` overrides). No manual matching needed.
-```
 
 `ApiResponse` factories build the envelope:
 
@@ -1005,12 +1018,25 @@ namespace api.Shared.Models;
 
 public sealed class ApiResponse
 {
-    public bool Success { get; init; }
-    public int Code { get; init; }
+    public bool Success { get; private init; }
+    public int Code { get; private init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Message { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? Data { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PageInfo? Pagination { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? Errors { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TraceId { get; set; }
+
+    internal ApiResponse() { }
 
     public static ApiResponse ForSuccess(int statusCode, object? data) => new()
     {
@@ -1020,7 +1046,7 @@ public sealed class ApiResponse
     public static ApiResponse ForFailure(Failure failure) => new()
     {
         Success = false, Code = failure.StatusCode,
-        Message = failure.Detail, Errors = failure.Errors
+        Message = failure.Message, Errors = failure.Errors
     };
 }
 ```
@@ -1274,7 +1300,7 @@ Service returns HttpFailure ──► FailureExtensions.ToError() ──► Resp
 | `Failure(string Message)` pure | Works in console apps, tests, domain — no ASP.NET dependency |
 | `HttpFailure` with static factories | Add HTTP status codes only when needed |
 | `Failure.StatusCode` is virtual | `HttpFailure` overrides it — polymorphism works naturally |
-| `Failure.Internal()` always returns generic 500 | Never leaks exception details to client |
+| `HttpFailure.Internal()` always returns generic 500 | Never leaks exception details to client |
 | `Result.Failed(HttpFailure)` to return from services | Explicit, readable |
 
 ---
@@ -1446,7 +1472,7 @@ public sealed class RecovererMiddleware
             _logger.LogError(ex, "Unhandled exception on {Method} {Path}",
                 context.Request.Method, context.Request.Path);
 
-            var response = ApiResponse.ForFailure(Failure.Internal());
+            var response = ApiResponse.ForFailure(HttpFailure.Internal());
             response.TraceId = context.TraceIdentifier;
 
             context.Response.StatusCode = response.Code;
