@@ -63,8 +63,9 @@ project-root/
 │       └── orders.json
 │
 └── src/
+    ├── container.ts                 # Root tsyringe container — import 'reflect-metadata'
     ├── env.ts                       # T3 Env — createEnv({ server, client, runtimeEnv })
-    │
+    ├── proxy.ts                     # Locale + auth guard routing
     ├── i18n/
     │   ├── routing.ts               # defineRouting({ locales, defaultLocale, localePrefix })
     │   └── request.ts               # getRequestConfig — loads messages per locale
@@ -75,10 +76,8 @@ project-root/
     │   ├── manifest.json            # PWA manifest
     │   ├── layout.tsx               # Root: <html lang>, metadata, metadataBase, viewport
     │   │
-    │   ├── _lib/                    # Shared app infrastructure (private folder)
+    │   ├── _lib/                    # Shared app infra (private folder)
     │   │   ├── di/
-    │   │   │   ├── container.ts     # Root tsyringe container — import 'reflect-metadata'
-    │   │   │   ├── use-resolve.ts   # useResolve<T>(token) hook — useMemo wrapper
     │   │   │   └── provider.tsx     # DIProvider — calls initializeAllModules() on mount
     │   │   └── query/
     │   │       └── provider.tsx     # QueryClientProvider — TanStack Query defaults
@@ -98,25 +97,27 @@ project-root/
     │       ├── error.tsx
     │       └── not-found.tsx
     │
+    ├── shared/                      # Cross-cutting kernel (not a module — foundation)
+    │   ├── di/
+    │   │   ├── tokens.ts            # SHARED_TOKENS.ApiClient, Logger
+    │   │   └── container.ts         # Logger reg, Axios + interceptors, initializeSharedModule()
+    │   ├── hooks/
+    │   │   └── use-resolve.ts       # useResolve<T>(token) — useMemo wrapper
+    │   ├── types/
+    │   │   ├── logger.ts            # ILogger interface
+    │   │   ├── api-error.ts         # ApiError { code, message, field? }
+    │   │   └── pagination.ts        # PaginationParams, PaginationMetadata, PaginatedResponse<T>
+    │   ├── infrastructure/
+    │   │   └── pino-logger.ts       # PinoLogger implements ILogger
+    │   ├── stores/                  # Shared Zustand stores
+    │   │   ├── notification.store.ts
+    │   │   └── theme.store.ts
+    │   ├── utils/
+    │   │   └── format-date.ts
+    │   └── index.ts                 # Barrel
+    │
     └── modules/                     # Feature modules — extractable business capabilities
         ├── registry.ts              # initializeAllModules() — dependency-ordered init calls
-        │
-        ├── shared/                  # Cross-cutting kernel
-        │   ├── di/
-        │   │   ├── tokens.ts        # SHARED_TOKENS.ApiClient, Logger
-        │   │   └── container.ts     # Logger reg, Axios + interceptors, initializeSharedModule()
-        │   ├── types/
-        │   │   ├── logger.ts        # ILogger interface
-        │   │   ├── api-error.ts     # ApiError { code, message, field? }
-        │   │   └── pagination.ts    # PaginationParams, PaginationMetadata, PaginatedResponse<T>
-        │   ├── infrastructure/
-        │   │   └── pino-logger.ts   # PinoLogger implements ILogger
-        │   ├── stores/              # Shared Zustand stores
-        │   │   ├── notification.store.ts
-        │   │   └── theme.store.ts
-        │   └── utils/
-        │       └── format-date.ts
-        │   └── index.ts            # Barrel
         │
         ├── auth/                    # Auth module
         │   ├── schemas/
@@ -616,8 +617,8 @@ src/modules/auth/application/
 ```ts
 // src/modules/auth/application/auth.service.ts
 import { inject, injectable } from 'tsyringe';
-import { SHARED_TOKENS } from '@/modules/shared';
-import type { ILogger } from '@/modules/shared/types/logger';
+import { SHARED_TOKENS } from '@/shared';
+import type { ILogger } from '@/shared/types/logger';
 import type { UserDto } from '../types/responses';
 import type { AuthRepository } from '../repositories/auth.repository';
 import type { LoginRequest } from '../schemas/login.schema';
@@ -684,8 +685,8 @@ src/modules/auth/repositories/
 // src/modules/auth/repositories/auth.repository.ts
 import { inject, injectable } from 'tsyringe';
 import type { AxiosInstance } from 'axios';
-import { SHARED_TOKENS } from '@/modules/shared';
-import type { ILogger } from '@/modules/shared/types/logger';
+import { SHARED_TOKENS } from '@/shared';
+import type { ILogger } from '@/shared/types/logger';
 import type { LoginResponse, RegisterResponse, TokenPair } from '../types/responses';
 import type { LoginRequest } from '../schemas/login.schema';
 import type { RegisterRequest } from '../schemas/register.schema';
@@ -756,7 +757,7 @@ src/modules/auth/ui/
 
 import { useForm } from '@tanstack/react-form';
 import { zodValidator } from '@tanstack/zod-form-adapter';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { loginSchema } from '../schemas/login.schema';
@@ -847,7 +848,7 @@ export function LoginForm() {
 
 import { useForm } from '@tanstack/react-form';
 import { zodValidator } from '@tanstack/zod-form-adapter';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthService } from '../application/auth.service';
 import { registerSchema } from '../schemas/register.schema';
@@ -953,7 +954,7 @@ export const AUTH_TOKENS = {
 
 ```ts
 // src/modules/auth/di/container.ts
-import { container as rootContainer } from '@/lib/di/container';
+import { container as rootContainer } from '@/container';
 import { AUTH_TOKENS } from './tokens';
 import { AuthServiceImpl } from '../application/auth.service';
 import { AuthRepository } from '../repositories/auth.repository';
@@ -1211,7 +1212,7 @@ export function QueryProvider({ children }: QueryProviderProps) {
 The single entry point for components to get services.
 
 ```ts
-// src/hooks/use-resolve.ts
+// src/shared/hooks/use-resolve.ts
 'use client';
 
 import { useMemo } from 'react';
@@ -1230,11 +1231,11 @@ export function useResolve<T>(token: InjectionToken<T>): T {
 
 ## DI Setup
 
-Module `di/container.ts` files import the root container directly from `@/lib/di/container`:
+Module `di/container.ts` files import the root container directly from `@/container`:
 
 ```ts
 // src/modules/auth/di/container.ts
-import { container } from '@/lib/di/container';
+import { container } from '@/container';
 import { AUTH_TOKENS } from './tokens';
 import { AuthService } from '../application/auth.service';
 
@@ -1271,7 +1272,7 @@ Single entry point that initializes all modules in dependency order.
 
 ```ts
 // src/modules/registry.ts
-import { initializeSharedModule } from '@/modules/shared';
+import { initializeSharedModule } from '@/shared';
 import { initializeAuthModule } from '@/modules/auth';
 import { initializeDashboardModule } from '@/modules/dashboard';
 import { initializeBillingModule } from '@/modules/billing';
@@ -1291,7 +1292,7 @@ export function initializeAllModules(): void {
 import { NextIntlClientProvider } from 'next-intl';
 import { QueryProvider } from '@/app/_lib/query/provider';
 import { DIProvider } from '@/app/_lib/di/provider';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import type { LayoutProps } from '@/app/[locale]/layout';
 
 export default async function RootLayout({
@@ -1346,7 +1347,7 @@ export const AUTH_TOKENS = {
 
 ---
 
-# Shared Kernel — `src/modules/shared/`
+# Shared Kernel — `src/shared/`
 
 ## Logger — `ILogger` Interface + `PinoLogger` Implementation
 
@@ -1357,7 +1358,7 @@ Modules depend on `ILogger`, never `pino.Logger`. Swap pino for winston/bunyan/c
 ### `ILogger` — Contract
 
 ```ts
-// src/modules/shared/types/logger.ts
+// src/shared/types/logger.ts
 export interface ILogger {
   debug(obj: Record<string, unknown>, msg?: string): void;
   info(obj: Record<string, unknown>, msg?: string): void;
@@ -1372,7 +1373,7 @@ No `trace`/`fatal` — four levels enough for client-frontend. Every method take
 ### Token
 
 ```ts
-// src/modules/shared/di/tokens.ts
+// src/shared/di/tokens.ts
 import type { InjectionToken } from 'tsyringe';
 import type { AxiosInstance } from 'axios';
 import type { ILogger } from '../types/logger';
@@ -1386,7 +1387,7 @@ export const SHARED_TOKENS = {
 ### `PinoLogger` — Implementation
 
 ```ts
-// src/modules/shared/infrastructure/pino-logger.ts
+// src/shared/infrastructure/pino-logger.ts
 import pino, { type Logger as PinoInstance } from 'pino';
 import type { ILogger } from '../types/logger';
 import { env } from '@/env';
@@ -1451,8 +1452,8 @@ export const rootLogger: ILogger = new PinoLogger(rootPino);
 ### DI Registration — Logger First
 
 ```ts
-// src/modules/shared/di/container.ts
-import { container as rootContainer } from '@/lib/di/container';
+// src/shared/di/container.ts
+import { container as rootContainer } from '@/container';
 import { env } from '@/env';
 import axios from 'axios';
 import { SHARED_TOKENS } from './tokens';
@@ -1521,7 +1522,7 @@ One pre-configured axios instance. Every API client imports it. Handles base URL
 ## Shared API Error Type
 
 ```ts
-// src/modules/shared/types/api-error.ts
+// src/shared/types/api-error.ts
 export interface ApiError {
   code: string;
   message: string;
@@ -1559,7 +1560,7 @@ Components catch `ApiError` — always the same shape, whether backend error or 
 ## Shared Pagination Types
 
 ```ts
-// src/modules/shared/types/pagination.ts
+// src/shared/types/pagination.ts
 
 export interface PaginationParams {
   page: number;
@@ -1744,7 +1745,7 @@ export function FormField({
 ## Barrel
 
 ```ts
-// src/modules/shared/index.ts
+// src/shared/index.ts
 export { SHARED_TOKENS } from './di/tokens';
 export { initializeSharedModule } from './di/container';
 export type { ILogger } from './types/logger';
@@ -1911,10 +1912,10 @@ For cross-module state (e.g., current user), export the store via the module's b
 export { useAuthStore } from './stores/auth.store';
 ```
 
-Shared/generic stores live in `src/modules/shared/stores/`:
+Shared/generic stores live in `src/shared/stores/`:
 
 ```
-src/modules/shared/
+src/shared/
   stores/
     notification.store.ts  # Toast notifications — used by any module
     theme.store.ts          # Dark/light mode
@@ -2010,7 +2011,7 @@ Components resolve the store hook via `useResolve`, then use it like any Zustand
 
 ```tsx
 'use client';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import { AUTH_TOKENS } from '../di/tokens';
 import type { AuthStore } from '../stores/auth.store';
 
@@ -2123,11 +2124,11 @@ src/modules/orders/
 ```ts
 // src/modules/orders/hooks/use-order-list.ts
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
 import type { OrderService } from '../../application/order.service';
 import type { OrderFilters } from '../../types/filters';
-import { createPaginationParams } from '@/modules/shared/types/pagination';
+import { createPaginationParams } from '@/shared/types/pagination';
 
 interface UseOrderListOptions {
   filters: OrderFilters;
@@ -2158,7 +2159,7 @@ export function useOrderList({ filters, pageSize = 20 }: UseOrderListOptions) {
 ```ts
 // src/modules/orders/hooks/use-create-order.ts
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useResolve } from '@/hooks/use-resolve';
+import { useResolve } from '@/shared/hooks/use-resolve';
 import { ORDER_TOKENS } from '../../di/tokens';
 import type { OrderService } from '../../application/order.service';
 import type { CreateOrderRequest } from '../../schemas/create-order.schema';
